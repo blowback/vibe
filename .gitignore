@@ -1,0 +1,15 @@
+# .gitignore
+*.com
+*.lst
+*.sld
+*.bin
+*.o
+*.obj
+build/
+test/build/
+.DS_Store
+*.swp
+*.tmp
+_bmad
+.claude
+node_modules
