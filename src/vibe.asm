@@ -17,8 +17,8 @@
 ;   (none yet — entry from CCP at 0x0100 with default CP/M state)
 ;
 ; Dependencies:
-;   inc/equates.inc, inc/vt52.inc, inc/modes.inc, inc/state.inc
-;   (bios.inc and bdos.inc arrive in Story 1.4)
+;   inc/equates.inc, inc/bios.inc, inc/bdos.inc, inc/vt52.inc,
+;   inc/modes.inc, inc/state.inc
 ; ============================================================
 
 ;; --- Compile-time-constant includes (dependency order per AR25) ---
@@ -26,6 +26,8 @@
 ; (state.inc is also EQU-only but DOES use $ to anchor the static
 ; map past code, so it is INCLUDEd after the RET, below.)
     INCLUDE "../inc/equates.inc"
+    INCLUDE "../inc/bios.inc"
+    INCLUDE "../inc/bdos.inc"
     INCLUDE "../inc/vt52.inc"
     INCLUDE "../inc/modes.inc"
 
