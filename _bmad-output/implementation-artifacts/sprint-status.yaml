@@ -1,5 +1,5 @@
 # generated: 2026-05-08
-# last_updated: 2026-05-09 (story 1.4 → done)
+# last_updated: 2026-05-09 (story 1.6 → done after code review; AC3 amended for FAIL hex-code stdout; 8 patches applied)
 # project: vibe
 # project_key: NOKEY
 # tracking_system: file-system
@@ -47,8 +47,8 @@ development_status:
   1-2-compile-time-constants-equates-modes-vt52: done
   1-3-static-memory-map-state-inc: done
   1-4-bios-bdos-shims-with-bdos-call-macro: done
-  1-5-status-line-module-with-single-message-funnel: backlog
-  1-6-headless-test-harness-scaffold: backlog
+  1-5-status-line-module-with-single-message-funnel: done
+  1-6-headless-test-harness-scaffold: done
   1-7-gap-buffer-primitives-headless-tests: backlog
   1-8-input-layer-with-esc-arrow-disambiguation: backlog
   1-9-mode-dispatch-with-sparse-table-binary-search: backlog
