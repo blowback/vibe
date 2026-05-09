@@ -17,9 +17,14 @@
 ;   (none yet — entry from CCP at 0x0100 with default CP/M state)
 ;
 ; Dependencies:
-;   (none yet — no INCLUDE directives until Story 1.2 lands the
-;    first real inc/*.inc content)
+;   inc/equates.inc, inc/vt52.inc, inc/modes.inc
+;   (bios.inc and bdos.inc arrive in Story 1.4; state.inc in 1.3)
 ; ============================================================
+
+;; --- Includes (dependency order per AR25) ---
+    INCLUDE "../inc/equates.inc"
+    INCLUDE "../inc/vt52.inc"
+    INCLUDE "../inc/modes.inc"
 
     ORG 0x0100
 

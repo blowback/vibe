@@ -20,6 +20,12 @@ SJASMPLUS := sjasmplus
 SJASMPLUS_FLAGS := --nologo --msg=err
 SJASMPLUS_REQUIRED_VERSION := v1.23.0
 
+# Wildcard inclusion is intentional: any .inc file in inc/ triggers a
+# rebuild even if vibe.asm doesn't yet INCLUDE it. Empty stubs (e.g.
+# bios.inc, bdos.inc, state.inc before Stories 1.3/1.4) cost nothing,
+# and once their content + INCLUDE land together the dependency is
+# already correctly tracked. Editing a populated-but-not-INCLUDEd .inc
+# rebuilds vibe.com to the same bytes — benign.
 SOURCES := $(wildcard src/*.asm) $(wildcard inc/*.inc)
 
 .PHONY: all clean test push sizes check-toolchain
