@@ -11,17 +11,20 @@
 ;   (none yet — populated as modules arrive in later stories)
 ;
 ; State owned (read/write):
-;   (none yet — Story 1.3 introduces state.inc)
+;   (declared in inc/state.inc; not yet read or written by code)
 ;
 ; Register conventions (across public entry points):
 ;   (none yet — entry from CCP at 0x0100 with default CP/M state)
 ;
 ; Dependencies:
-;   inc/equates.inc, inc/vt52.inc, inc/modes.inc
-;   (bios.inc and bdos.inc arrive in Story 1.4; state.inc in 1.3)
+;   inc/equates.inc, inc/vt52.inc, inc/modes.inc, inc/state.inc
+;   (bios.inc and bdos.inc arrive in Story 1.4)
 ; ============================================================
 
-;; --- Includes (dependency order per AR25) ---
+;; --- Compile-time-constant includes (dependency order per AR25) ---
+; Pure-EQU headers that do NOT use $; safe to place before ORG.
+; (state.inc is also EQU-only but DOES use $ to anchor the static
+; map past code, so it is INCLUDEd after the RET, below.)
     INCLUDE "../inc/equates.inc"
     INCLUDE "../inc/vt52.inc"
     INCLUDE "../inc/modes.inc"
@@ -32,3 +35,14 @@
                             ; vector at 0x0000 pushed by CCP.
                             ; Replaced by proper init/teardown
                             ; in Story 1.12.
+
+;; --- Static memory map (positional; anchors past code) ---
+; state.inc is the AR25-final include; positioned here (not in the
+; pre-ORG block) so that `static_data_base EQU $` resolves to the
+; first address past code, not 0x0000. EQU-only — no bytes emit.
+;
+; state.inc MUST be the last source emitted from vibe.asm. Anything
+; below this INCLUDE would either emit bytes past static_data_base
+; (overlapping declared statics with no build-time error) or land
+; outside the ASSERT yank_end <= 0xD800 guard inside state.inc.
+    INCLUDE "../inc/state.inc"
