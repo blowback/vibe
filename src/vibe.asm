@@ -20,7 +20,8 @@
 ; Dependencies:
 ;   inc/equates.inc, inc/bios.inc, inc/bdos.inc, inc/vt52.inc,
 ;   inc/modes.inc, inc/state.inc; src/input.asm (Story 1.8);
-;   src/statusln.asm (Story 1.5); src/gapbuf.asm (Story 1.7)
+;   src/statusln.asm (Story 1.5); src/gapbuf.asm (Story 1.7);
+;   src/dispatch.asm (Story 1.9)
 ; ============================================================
 
 ;; --- Compile-time-constant includes (dependency order per AR25) ---
@@ -62,6 +63,14 @@
 ; at 0x0100 stays in place until then. Tests in test/cases/gapbuf_*
 ; exercise the primitives standalone.
     INCLUDE "gapbuf.asm"
+
+;; --- Mode dispatcher (MC3; dispatch.asm — Story 1.9) ---
+; AR25 order: gapbuf -> render -> dispatch -> parser. render.asm
+; (Story 1.11) does not yet exist; when it lands it will slot in
+; BEFORE dispatch.asm here. Production callers of dispatch_key
+; arrive in Story 1.12 (the input_loop body wires
+; input_get_key + dispatch_key + render_diff together).
+    INCLUDE "dispatch.asm"
 
 ;; --- Input-loop abort target (Story 1.5 stub; Story 1.12 owns) ---
 ; bdos_error_funnel JPs here after writing its status message.

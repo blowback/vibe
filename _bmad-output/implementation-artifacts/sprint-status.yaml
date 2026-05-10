@@ -1,5 +1,5 @@
 # generated: 2026-05-08
-# last_updated: 2026-05-10 (story 1.8 → done: code review applied 4 patches + 4 deferrals; PRD risk-rank-1 closed pending UAT in 1.12)
+# last_updated: 2026-05-10 (story 1.9 → done: code review clean, 1 narration-comment patch applied, 3 deferred with reasons; 10 pass / 1 fail; byte-identical rebuilds)
 # project: vibe
 # project_key: NOKEY
 # tracking_system: file-system
@@ -51,7 +51,7 @@ development_status:
   1-6-headless-test-harness-scaffold: done
   1-7-gap-buffer-primitives-headless-tests: done
   1-8-input-layer-with-esc-arrow-disambiguation: done
-  1-9-mode-dispatch-with-sparse-table-binary-search: backlog
+  1-9-mode-dispatch-with-sparse-table-binary-search: done
   1-10-command-parser-count-pending-operator-motion-prefix: backlog
   1-11-render-pipeline-with-dirty-rows-scroll-ctrl-l: backlog
   1-12-init-teardown-on-hardware-smoke-test: backlog
