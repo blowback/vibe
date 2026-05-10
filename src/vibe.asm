@@ -18,7 +18,8 @@
 ;
 ; Dependencies:
 ;   inc/equates.inc, inc/bios.inc, inc/bdos.inc, inc/vt52.inc,
-;   inc/modes.inc, inc/state.inc; src/statusln.asm (Story 1.5)
+;   inc/modes.inc, inc/state.inc; src/statusln.asm (Story 1.5);
+;   src/gapbuf.asm (Story 1.7)
 ; ============================================================
 
 ;; --- Compile-time-constant includes (dependency order per AR25) ---
@@ -44,6 +45,14 @@
 ; past code. Per AR25 module include order: statusln is "early —
 ; depended on by everything" (architecture line 939).
     INCLUDE "statusln.asm"
+
+;; --- Gap-buffer module (AR14; gapbuf.asm — Story 1.7) ---
+; AR25 order: statusln (load early — depended on by everything)
+; -> gapbuf (architecture line 940). Production callers of
+; gapbuf_init arrive in Story 1.12 (init/teardown); the RET stub
+; at 0x0100 stays in place until then. Tests in test/cases/gapbuf_*
+; exercise the primitives standalone.
+    INCLUDE "gapbuf.asm"
 
 ;; --- Input-loop abort target (Story 1.5 stub; Story 1.8 owns) ---
 ; bdos_error_funnel JPs here after writing its status message.

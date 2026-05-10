@@ -12,6 +12,11 @@
 ;   bdos_error_funnel    ; abort path entered from BDOS_CALL on JP M
 ;   status_render        ; render stub (Story 1.11 lands the real body)
 ;
+;   Message strings (AR16 — co-located here, all modules read by symbol):
+;     msg_buffer_modified, msg_file_too_large, msg_pattern_not_found,
+;     msg_search_wrapped, msg_undo_too_large, msg_nothing_to_undo,
+;     msg_not_implemented, msg_no_write, msg_bdos_error
+;
 ; State owned (read/write):
 ;   status_buffer        ; 80-byte row buffer; writer = this module only (AR12)
 ;   status_dirty         ; nonzero = needs render; writer = this module only (AR12)
@@ -162,7 +167,9 @@ status_render:
 ; is reserved for search_pattern and ex_buffer.
 ;
 ; The seven enumerated by epics line 444 plus msg_bdos_error
-; (the safety-net message used by bdos_error_funnel itself).
+; (the safety-net message used by bdos_error_funnel itself) and
+; msg_not_implemented (Story 1.7 — stub-routine surface; co-located
+; here per AR16 so future stubs can share it).
 
 msg_buffer_modified:    DEFB "buffer modified", 0
 msg_file_too_large:     DEFB "file too large", 0
@@ -170,5 +177,6 @@ msg_pattern_not_found:  DEFB "pattern not found", 0
 msg_search_wrapped:     DEFB "search wrapped", 0
 msg_undo_too_large:     DEFB "undo not possible - too large", 0
 msg_nothing_to_undo:    DEFB "nothing to undo", 0
+msg_not_implemented:    DEFB "not yet implemented", 0
 msg_no_write:           DEFB "no write since last change", 0
 msg_bdos_error:         DEFB "bdos error", 0
