@@ -48,6 +48,10 @@ DIRTY_ROWS_BITMAP_BYTES EQU (SCREEN_ROWS + 7) / 8  ; ceil(rows/8); auto-resizes 
 
 ;; --- Input timing ---
 ESC_TIMEOUT_TICKS     EQU 2       ; 50 Hz tick window for Esc/arrow disambiguation (RI5/NFR4)
+                                  ; Must be > 0: LD B, 0 + DJNZ wraps to 256
+                                  ; iterations (~5 s), inverting the intent of
+                                  ; "skip the window" — guard at build time.
+    ASSERT ESC_TIMEOUT_TICKS > 0
 
 ;; --- Editing knobs ---
 INDENT_BYTE           EQU 0x20    ; ASCII space — byte inserted/removed by >, <, >>, << (Stories 2.11, 3.7; readiness item #6)

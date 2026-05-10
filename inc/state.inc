@@ -9,7 +9,8 @@
 ;   Anchors:        static_data_base, static_end, GAP_BUFFER_BASE
 ;   Small state:    mode_byte, visual_submode, buffer_dirty,
 ;                   pending_operator, yank_kind, status_dirty,
-;                   pending_motion_prefix
+;                   pending_motion_prefix, input_held_byte,
+;                   input_held_flag
 ;   16-bit state:   cursor_offset, gap_start, gap_end,
 ;                   visual_anchor, count_accumulator,
 ;                   yank_length, top_line_offset
@@ -54,6 +55,10 @@ static_off            =   static_off + 1
 status_dirty          EQU static_data_base + static_off
 static_off            =   static_off + 1
 pending_motion_prefix EQU static_data_base + static_off
+static_off            =   static_off + 1
+input_held_byte       EQU static_data_base + static_off
+static_off            =   static_off + 1
+input_held_flag       EQU static_data_base + static_off
 static_off            =   static_off + 1
 
 ;; --- 16-bit state ---
