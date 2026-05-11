@@ -1,5 +1,5 @@
 # generated: 2026-05-08
-# last_updated: 2026-05-10 (story 1.9 → done: code review clean, 1 narration-comment patch applied, 3 deferred with reasons; 10 pass / 1 fail; byte-identical rebuilds)
+# last_updated: 2026-05-10 (story 1.10 → done: code review applied 9 patches — parser.asm comment fixes (parser_clear shape, leading-zero rationale, motion-zero-stub tail-unwind note) + 6 test-coverage strengthenings (yy/dyy/wrap/g-then-0/AC10 prefix-zero/AC11 op-unchanged); 5 deferred items recorded in deferred-work.md; vibe.com SHA unchanged at 2a894870 — patches were doc/test only)
 # project: vibe
 # project_key: NOKEY
 # tracking_system: file-system
@@ -52,7 +52,7 @@ development_status:
   1-7-gap-buffer-primitives-headless-tests: done
   1-8-input-layer-with-esc-arrow-disambiguation: done
   1-9-mode-dispatch-with-sparse-table-binary-search: done
-  1-10-command-parser-count-pending-operator-motion-prefix: backlog
+  1-10-command-parser-count-pending-operator-motion-prefix: done
   1-11-render-pipeline-with-dirty-rows-scroll-ctrl-l: backlog
   1-12-init-teardown-on-hardware-smoke-test: backlog
   epic-1-retrospective: optional

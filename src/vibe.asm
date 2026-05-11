@@ -21,7 +21,7 @@
 ;   inc/equates.inc, inc/bios.inc, inc/bdos.inc, inc/vt52.inc,
 ;   inc/modes.inc, inc/state.inc; src/input.asm (Story 1.8);
 ;   src/statusln.asm (Story 1.5); src/gapbuf.asm (Story 1.7);
-;   src/dispatch.asm (Story 1.9)
+;   src/dispatch.asm (Story 1.9); src/parser.asm (Story 1.10)
 ; ============================================================
 
 ;; --- Compile-time-constant includes (dependency order per AR25) ---
@@ -71,6 +71,16 @@
 ; arrive in Story 1.12 (the input_loop body wires
 ; input_get_key + dispatch_key + render_diff together).
     INCLUDE "dispatch.asm"
+
+;; --- Command parser (MC4; parser.asm — Story 1.10) ---
+; AR25 order: dispatch -> parser -> motions. motions.asm
+; (Story 2.5+) does not yet exist; when it lands it will slot
+; in AFTER parser.asm here. Production callers of
+; parser_handle_digit / parser_handle_operator /
+; parser_handle_motion_prefix arrive via dispatch_normal once
+; the Story 1.12 input_loop body wires
+; input_get_key + dispatch_key + render_diff together.
+    INCLUDE "parser.asm"
 
 ;; --- Input-loop abort target (Story 1.5 stub; Story 1.12 owns) ---
 ; bdos_error_funnel JPs here after writing its status message.

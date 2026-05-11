@@ -84,6 +84,12 @@
 ;   inc/state.inc    (mode_byte, visual_submode)
 ;   src/statusln.asm (status_set_message + msg_mode_*,
 ;                     msg_unbound_key, msg_not_implemented)
+;   src/parser.asm   (Story 1.10 — parser_handle_digit,
+;                     parser_handle_operator,
+;                     parser_handle_motion_prefix; referenced
+;                     by dispatch_normal's '0'..'9', operators,
+;                     and 'g' entries — forward-referenced via
+;                     sjasmplus two-pass assembly)
 ; ============================================================
 
 ;; ============================================================
@@ -440,16 +446,61 @@ dispatch_normal:
     ASSERT  '/' > 0x11
     DEFB    '/'                         ; '/'     — search prompt stub (3.1)
     DEFW    mode_search_prompt_stub
-    ASSERT  ':' > '/'
+    ASSERT  '0' > '/'
+    DEFB    '0'                         ; '0'     — leading-zero handled
+    DEFW    parser_handle_digit         ;            inside the parser (FR21)
+    ASSERT  '1' > '0'
+    DEFB    '1'                         ; '1'..'9' — count accumulator (FR23)
+    DEFW    parser_handle_digit
+    ASSERT  '2' > '1'
+    DEFB    '2'
+    DEFW    parser_handle_digit
+    ASSERT  '3' > '2'
+    DEFB    '3'
+    DEFW    parser_handle_digit
+    ASSERT  '4' > '3'
+    DEFB    '4'
+    DEFW    parser_handle_digit
+    ASSERT  '5' > '4'
+    DEFB    '5'
+    DEFW    parser_handle_digit
+    ASSERT  '6' > '5'
+    DEFB    '6'
+    DEFW    parser_handle_digit
+    ASSERT  '7' > '6'
+    DEFB    '7'
+    DEFW    parser_handle_digit
+    ASSERT  '8' > '7'
+    DEFB    '8'
+    DEFW    parser_handle_digit
+    ASSERT  '9' > '8'
+    DEFB    '9'
+    DEFW    parser_handle_digit
+    ASSERT  ':' > '9'
     DEFB    ':'                         ; ':'     — enter command (FR14)
     DEFW    enter_command_mode
-    ASSERT  'O' > ':'
+    ASSERT  '<' > ':'
+    DEFB    '<'                         ; '<'     — operator (FR39)
+    DEFW    parser_handle_operator
+    ASSERT  '>' > '<'
+    DEFB    '>'                         ; '>'     — operator (FR39)
+    DEFW    parser_handle_operator
+    ASSERT  'O' > '>'
     DEFB    'O'                         ; 'O'     — Epic 1 stub for FR27
     DEFW    enter_insert_mode
     ASSERT  'a' > 'O'
     DEFB    'a'                         ; 'a'     — Epic 1 stub for FR25
     DEFW    enter_insert_mode
-    ASSERT  'i' > 'a'
+    ASSERT  'c' > 'a'
+    DEFB    'c'                         ; 'c'     — operator (FR39)
+    DEFW    parser_handle_operator
+    ASSERT  'd' > 'c'
+    DEFB    'd'                         ; 'd'     — operator (FR39, FR40)
+    DEFW    parser_handle_operator
+    ASSERT  'g' > 'd'
+    DEFB    'g'                         ; 'g'     — motion prefix (FR22)
+    DEFW    parser_handle_motion_prefix
+    ASSERT  'i' > 'g'
     DEFB    'i'                         ; 'i'     — enter insert (FR13)
     DEFW    enter_insert_mode
     ASSERT  'o' > 'i'
@@ -458,6 +509,9 @@ dispatch_normal:
     ASSERT  'v' > 'o'
     DEFB    'v'                         ; 'v'     — enter visual (FR15)
     DEFW    enter_visual_mode
+    ASSERT  'y' > 'v'
+    DEFB    'y'                         ; 'y'     — operator (FR39, FR40)
+    DEFW    parser_handle_operator
 DISPATCH_NORMAL_COUNT EQU ($ - .entries) / 3
 
 dispatch_insert:
