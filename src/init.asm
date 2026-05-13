@@ -74,13 +74,14 @@
 ;   DEFAULT_FCB (0x005C) — the CP/M default FCB is at a well-
 ;     known address; CCP populates it with the filename
 ;     argument(s) typed at the prompt before transferring
-;     control to the .com at 0x0100. Story 1.12 deliberately
-;     SKIPS the parse — the editor launches with an empty
-;     buffer regardless of whether the user typed `vibe` or
-;     `vibe foo.fs`. Story 2.3 lands the real FCB ->
-;     filename_buffer parse + fileio_load integration.
-;     filename_buffer (16 bytes, declared in inc/state.inc) is
-;     left zero-init from the stage-1 LDIR fill.
+;     control to the .com at 0x0100. Story 2.3 resolved: Stage
+;     5 calls fileio_load_initial (src/fileio.asm) which parses
+;     DEFAULT_FCB and either seeds msg_mode_normal (no arg) or
+;     executes the launch load via the same fileio_load_after_open
+;     shared body that :e uses. The launch path bypasses
+;     bdos_error_funnel via the documented AR15 launch carve-out
+;     so init_cold_start's Stages 6/7 complete regardless of
+;     whether the file exists on disk.
 ;
 ; Register conventions (across public entry points):
 ;   init_cold_start:  In: (none — entered from src/vibe.asm's
@@ -145,6 +146,9 @@
 ;                     init_teardown reuses render_init for the
 ;                     screen-clear + cursor-home emit so AR13
 ;                     stays single-sited)
+;   src/fileio.asm   (fileio_load_initial — Story 2.3 Stage 5
+;                     launch-with-filename entry; replaces the
+;                     Story-1.12 msg_mode_normal seed)
 ;   src/vibe.asm     (input_loop — fall-through target; this
 ;                     story rewrites input_loop's body)
 ; ============================================================
@@ -309,12 +313,24 @@ init_cold_start:
     ;; --- Stage 4: clear screen, seed shadow, home cursor ---
     CALL    render_init
 
-    ;; --- Stage 5: seed status_dirty via msg_mode_normal (AR12) ---
-    ;; msg_mode_normal is the empty string; status_set_message's
-    ;; null-on-byte-0 path pads STATUS_LINE_WIDTH with spaces.
-    LD      HL, msg_mode_normal
-    XOR     A                       ; non-error code arg (AR16 convention)
-    CALL    status_set_message
+    ;; --- Stage 5: parse default FCB; load or seed status (Story 2.3) ---
+    ;; fileio_load_initial reads the CCP-populated DEFAULT_FCB at
+    ;; 0x005C. If no filename argument is present (basename[0] is
+    ;; a space, per CCP space-pad convention), it seeds the status
+    ;; row with msg_mode_normal — the empty banner that pads to
+    ;; STATUS_LINE_WIDTH (preserves the pre-2.3 cold-start banner).
+    ;; If a filename IS present, fileio_load_initial parses the
+    ;; FCB, attempts BDOS_OPEN, and either: (a) loads the file
+    ;; (success — status = "FILENAME N bytes"); (b) takes the
+    ;; new-file path on open-fail (filename_buffer PRESERVED,
+    ;; status = "FILENAME [new file]", buffer empty); or
+    ;; (c) refuses the load on oversize / read-error (filename
+    ;; cleared, status = "file too large" / "can't read file",
+    ;; buffer empty). All paths RET back here so Stages 6/7
+    ;; complete; the launch flow does NOT route open-fail through
+    ;; bdos_error_funnel (whose terminal JP-to-input_loop would
+    ;; bypass Stages 6/7). See fileio.asm's AR15 launch carve-out.
+    CALL    fileio_load_initial
 
     ;; --- Stage 6: initial full redraw ---
     CALL    render_full

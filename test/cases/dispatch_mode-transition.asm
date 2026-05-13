@@ -272,6 +272,10 @@ BIOS_CONOUT EQU test_bios_conout
 ;; ----- Capture stub for BIOS_CONOUT override -----
     INCLUDE "../inc/test_bios_conout_capture.inc"
 
+;; ----- LOCAL init_teardown stub (Story 2.3: exline.asm cmd_quit references init_teardown) -----
+init_teardown:
+    RET
+
 ;; ----- test_pass / test_fail labels -----
     INCLUDE "../inc/test_epilogue.inc"
 
@@ -279,6 +283,9 @@ BIOS_CONOUT EQU test_bios_conout
     INCLUDE "../../src/statusln.asm"
     INCLUDE "../../src/dispatch.asm"
     INCLUDE "../../src/parser.asm"
+    INCLUDE "../../src/gapbuf.asm"
+    INCLUDE "../../src/exline.asm"
+    INCLUDE "../../src/fileio.asm"
     INCLUDE "../../src/render.asm"
 
 ;; ----- input_loop stub (resolves bdos_error_funnel symbol) -----

@@ -30,6 +30,7 @@
     INCLUDE "../../inc/equates.inc"
     INCLUDE "../../inc/bios.inc"
     INCLUDE "../../inc/bdos.inc"
+    INCLUDE "../../inc/modes.inc"
 
 ;; --- ORG 0x0100, sentinel pre-zero, test_start ---
     INCLUDE "../inc/test_prologue.inc"

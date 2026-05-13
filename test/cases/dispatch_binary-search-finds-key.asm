@@ -156,6 +156,10 @@ test_handler_Z:
     LD      A, 0x55
     LD      (TEST_CONTEXT), A
     RET
+;; ----- LOCAL init_teardown stub (Story 2.3: exline.asm references init_teardown via cmd_quit) -----
+init_teardown:
+    RET
+
 test_unbound:
     LD      A, 0x66
     LD      (TEST_CONTEXT), A
@@ -168,6 +172,9 @@ test_unbound:
     INCLUDE "../../src/statusln.asm"
     INCLUDE "../../src/dispatch.asm"
     INCLUDE "../../src/parser.asm"
+    INCLUDE "../../src/gapbuf.asm"
+    INCLUDE "../../src/exline.asm"
+    INCLUDE "../../src/fileio.asm"
     INCLUDE "../../src/render.asm"
 
 ;; ----- input_loop stub (resolves bdos_error_funnel symbol) -----

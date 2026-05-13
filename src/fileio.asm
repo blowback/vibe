@@ -52,10 +52,21 @@
 ;                   CALL per sector cheaper, and the SR2 walk-through
 ;                   above shows the seam is harmless.
 ;            AR15 — every BDOS call in this module uses the
-;                   BDOS_CALL macro (no raw `CALL 0x0005` /
-;                   `CALL BDOS_ENTRY`). The macro's `JP M` catches
-;                   sign-bit returns (0xFF from BDOS_OPEN's file-
-;                   not-found); positive failure codes from
+;                   BDOS_CALL macro EXCEPT one site: the
+;                   `fileio_load_initial` BDOS_OPEN (Story 2.3) is
+;                   inlined (LD C / CALL BDOS_ENTRY / OR A / JP M)
+;                   so the bdos_error_funnel's terminal JP-to-
+;                   input_loop does NOT fire on open-fail. The
+;                   launch path needs to surface a "[new file]"
+;                   banner and RET back to init_cold_start so
+;                   Stages 6/7 (render_full + fall-through to
+;                   input_loop) complete; the funnel would skip
+;                   those stages. The carve-out is single-site,
+;                   inline-annotated, and otherwise byte-identical
+;                   to the macro expansion. The macro's `JP M`
+;                   still catches sign-bit returns (0xFF from
+;                   BDOS_OPEN's file-not-found) at every other
+;                   site; positive failure codes from
 ;                   BDOS_READ_SEQ (A >= 2) have bit 7 clear and
 ;                   are inspected per-call here.
 ;            AR16 — message strings are lowercase, no trailing
@@ -75,6 +86,19 @@
 ;                               ; spaces; this entry assumes the
 ;                               ; filename text is the head of a
 ;                               ; valid non-empty run.
+;   fileio_load_initial         ; Story 2.3 — launch-with-filename
+;                               ; entry called from init_cold_start
+;                               ; Stage 5. Reads CCP-populated
+;                               ; DEFAULT_FCB (0x005C); no-arg
+;                               ; (basename[0]==' ') short-circuits
+;                               ; to msg_mode_normal; non-empty
+;                               ; runs the load via fileio_load_after_open
+;                               ; (shared post-open body) on open
+;                               ; success, OR composes "FILENAME
+;                               ; [new file]" with filename_buffer
+;                               ; PRESERVED on open fail. RET on
+;                               ; every terminal path (no funnel
+;                               ; routing — see AR15 carve-out).
 ;   fileio_strip_leading_spaces ; HL = ptr, A = length -> HL' =
 ;                               ; first non-space, A' = remaining
 ;                               ; length. Used by cmd_edit /
@@ -133,9 +157,32 @@
 ;                                     A = remaining length
 ;                                Trashes: B, F.
 ;
+;   fileio_load_initial:         In:  (none — reads DEFAULT_FCB)
+;                                Out: One of four terminal states:
+;                                     no-arg (msg_mode_normal seeded,
+;                                     filename_buffer untouched),
+;                                     load-success (status =
+;                                     "FILENAME N bytes"; cursor=0),
+;                                     new-file (status = "FILENAME
+;                                     [new file]"; filename_buffer
+;                                     PRESERVED; buffer empty), or
+;                                     too-large / read-error (filename
+;                                     CLEARED; buffer empty). RET on
+;                                     every path.
+;                                Trashes: A, BC, DE, HL, F.
+;                                Calls: fileio_setup_from_default_fcb,
+;                                     gapbuf_init, BDOS_ENTRY (inline
+;                                     AR15 launch carve-out),
+;                                     fileio_load_after_open (fall-
+;                                     through on open success),
+;                                     fileio_compose_new_file_status,
+;                                     render_mark_all_dirty,
+;                                     status_set_message.
+;
 ; Dependencies:
 ;   inc/equates.inc  (GAP_BUFFER_MAX)
-;   inc/bios.inc     (DEFAULT_DMA)
+;   inc/bios.inc     (DEFAULT_DMA; DEFAULT_FCB — Story 2.3 launch path;
+;                     BDOS_ENTRY — Story 2.3 AR15 launch carve-out)
 ;   inc/bdos.inc     (BDOS_CALL, BDOS_OPEN, BDOS_SET_DMA,
 ;                     BDOS_READ_SEQ, BDOS_CLOSE)
 ;   inc/state.inc    (gap_start, gap_end, cursor_offset,
@@ -143,7 +190,8 @@
 ;   src/gapbuf.asm   (gapbuf_init, gapbuf_move_gap)
 ;   src/render.asm   (render_mark_all_dirty)
 ;   src/statusln.asm (status_set_message, msg_file_too_large,
-;                     msg_read_error; bdos_error_pre_msg override)
+;                     msg_read_error, msg_mode_normal;
+;                     bdos_error_pre_msg override)
 ; ============================================================
 
 ;; ============================================================
@@ -194,6 +242,41 @@ fileio_load:
     LD      HL, 0
     LD      (bdos_error_pre_msg), HL
 
+    ;; Fall through to fileio_load_after_open — shared with
+    ;; fileio_load_initial (Story 2.3). Both open paths converge
+    ;; here once the OPEN has succeeded (A = 0..3); the body
+    ;; below is the load's Steps 6-12.
+
+;; ----------------------------------------------------------------
+; fileio_load_after_open
+; Shared post-open body — runs the read loop, post-load gap shift,
+; cursor/dirty reset, and status emit. Reached by FALL-THROUGH
+; (no JR / no CALL) from two upstream open paths:
+;   - fileio_load        (Story 2.2 — :e via the BDOS_CALL macro +
+;                         bdos_error_pre_msg funnel routing on fail)
+;   - fileio_load_initial (Story 2.3 — vibe FILENAME launch via the
+;                         AR15 launch carve-out's inline open)
+;
+; Behavioural-equivalence guarantee: this block is byte-identical
+; in observable post-state to Story 2.2's original Steps 6-12. The
+; existing Story-2.2 tests (fileio_load-*, fileio_e-*) are the
+; regression net.
+;
+; In:      A = 0..3 (the BDOS_OPEN success result; not inspected here).
+;          fcb_scratch populated with the FCB the open succeeded on.
+;          filename_buffer populated with the canonical display form.
+;          gap buffer at SR2-empty (the caller has CALLed gapbuf_init).
+; Out:     gap buffer holds the loaded content; cursor_offset = 0;
+;          buffer_dirty = 0; all editable rows marked dirty;
+;          status row = "<FILENAME> N bytes". RET unwinds to the
+;          caller's caller (cmd_edit / init_cold_start, etc.).
+; Trashes: A, BC, DE, HL, F.
+; Calls:   BDOS_CALL (SET_DMA / READ_SEQ / CLOSE), fileio_ingest_sector,
+;          gapbuf_move_gap, render_mark_all_dirty,
+;          fileio_compose_loaded_status, status_set_message,
+;          fileio_abort_too_large, fileio_abort_read_error.
+; ----------------------------------------------------------------
+fileio_load_after_open:
     ;; Step 6: defensive DMA reset to CP/M default 0x0080. CCP
     ;; loads .com files with DMA at 0x0080; we re-set in case a
     ;; future story's :w path has shifted it.
@@ -297,6 +380,223 @@ fileio_strip_leading_spaces:
     JR      .loop
 .done:
     LD      A, B
+    RET
+
+
+;; ============================================================
+;; --- Public entry: fileio_load_initial (Story 2.3) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; fileio_load_initial
+; Story 2.3: launch-with-filename. Parses the CCP-populated default
+; FCB at DEFAULT_FCB (0x005C); branches by FCB content into one of
+; four terminal paths (all RET via tail-JP through status_set_message,
+; so init_cold_start's Stages 6/7 can run after this returns):
+;
+;   - no-arg     (DEFAULT_FCB + 1 == ' '):
+;                 seed status with msg_mode_normal — preserves
+;                 Story-1.12's Stage-5 banner; buffer untouched.
+;   - load-success:
+;                 fall through to fileio_load_after_open (shared
+;                 with :e); status = "<FILENAME> N bytes"; cursor=0.
+;   - new-file   (BDOS_OPEN returns 0xFF):
+;                 status = "<FILENAME> [new file]"; gap stays empty;
+;                 buffer_dirty=0; filename_buffer PRESERVED so
+;                 Story 2.4's :w has a save target.
+;   - too-large / read-error (during the shared read loop):
+;                 fileio_abort_too_large / _read_error fire (Story
+;                 2.2 paths, unchanged); filename_buffer CLEARED.
+;
+; Open-fail DIVERGENCE from fileio_load (the :e entry): :e routes
+; open-fail through bdos_error_funnel which surfaces "can't open
+; FILENAME" via bdos_error_pre_msg and then JPs terminally to
+; input_loop, leaving the user back at NORMAL with an empty buffer.
+; vibe FILENAME instead KEEPS filename_buffer set so the next :w
+; saves into a not-yet-on-disk file (FR1 / FR52 / NFR6 — no silent
+; data loss when the user types content into a new-file buffer).
+;
+; AR15 LAUNCH CARVE-OUT: the BDOS_OPEN below is inlined (no macro)
+; because the bdos_error_funnel's terminal JP-to-input_loop would
+; bypass init_cold_start's Stages 6/7 (render_full + JP input_loop).
+; The launch path must RET to init_cold_start regardless of OPEN
+; success or failure. See the module-header "Architectural
+; enforcement here" block for the full carve-out documentation.
+;
+; In:      (none — reads DEFAULT_FCB at 0x005C; the gap-buffer state
+;          established by init_cold_start's Stage 3 gapbuf_init)
+; Out:     RET on every terminal path. State per the four branches
+;          above. status_set_message has been called; status_dirty
+;          set; status_buffer holds the appropriate banner.
+; Trashes: A, BC, DE, HL, F.
+; Calls:   fileio_setup_from_default_fcb, gapbuf_init,
+;          BDOS_ENTRY (inline AR15 launch carve-out, NOT the macro),
+;          fileio_load_after_open (fall-through on open success),
+;          fileio_compose_new_file_status (on .new_file),
+;          render_mark_all_dirty, status_set_message (tail-JP from
+;          .new_file and .no_arg).
+; ----------------------------------------------------------------
+fileio_load_initial:
+    ;; Step 1: no-arg short-circuit. CCP space-pads the basename
+    ;; when no filename argument is on the command tail; first
+    ;; basename byte at DEFAULT_FCB + 1 == ' ' is the canonical
+    ;; "no arg" sentinel.
+    LD      A, (DEFAULT_FCB + 1)
+    CP      ' '
+    JR      Z, .no_arg
+
+    ;; Step 2: copy + translate DEFAULT_FCB into fcb_scratch and
+    ;; compose canonical filename_buffer display name.
+    CALL    fileio_setup_from_default_fcb
+
+    ;; Step 3: reset gap buffer to SR2-empty. Idempotent against
+    ;; init_cold_start Stage 3's gapbuf_init, but keeps the AR14
+    ;; discipline of routing every SR2 establishment through
+    ;; gapbuf_init at every load entry.
+    CALL    gapbuf_init
+
+    ;; Step 4: AR15 launch carve-out — inline BDOS_OPEN check.
+    ;; The BDOS_CALL macro's bdos_error_funnel routes terminally
+    ;; via JP input_loop on open-fail, which would bypass
+    ;; init_cold_start Stages 6/7. We inline the BDOS sequence
+    ;; here and branch the failure locally to .new_file.
+    LD      C, BDOS_OPEN
+    LD      DE, fcb_scratch
+    CALL    BDOS_ENTRY                  ; AR15 launch carve-out
+    OR      A
+    JP      M, .new_file                ; A bit 7 = 1 -> not found
+
+    ;; Step 5: open succeeded (A = 0..3). Jump to the shared
+    ;; post-open body — same path as :e from here. JP (not JR)
+    ;; because the three Story-2.3 helpers between this site and
+    ;; fileio_load_after_open push the target out of JR range.
+    JP      fileio_load_after_open
+
+.new_file:
+    ;; Open failed. filename_buffer is PRESERVED (Story 2.3 AC4);
+    ;; gap stays empty (Step 3); compose "<FILENAME> [new file]"
+    ;; status banner. RET via status_set_message's tail-JP.
+    CALL    fileio_compose_new_file_status   ; HL = scratch
+    XOR     A
+    LD      (buffer_dirty), A
+    CALL    render_mark_all_dirty
+    LD      HL, fileio_status_scratch
+    XOR     A                           ; non-error-code arg (AR16)
+    JP      status_set_message          ; tail-JP
+
+.no_arg:
+    ;; No filename argument — seed status row with msg_mode_normal
+    ;; (empty banner, padded to STATUS_LINE_WIDTH). Buffer empty
+    ;; from init Stage 3; filename_buffer zero from Stage 1 LDIR.
+    LD      HL, msg_mode_normal
+    XOR     A
+    JP      status_set_message          ; tail-JP
+
+
+;; ============================================================
+;; --- Internal helper: fileio_setup_from_default_fcb (Story 2.3) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; fileio_setup_from_default_fcb
+; Copies DEFAULT_FCB[0..11] (drive byte + 8.3 basename/ext) into
+; fcb_scratch[0..11], zero-fills fcb_scratch[12..35] (extent / S1
+; / S2 / record-count / allocation-map / current-record must be
+; zero for a fresh BDOS_OPEN per CP/M 2.2 convention), applies
+; FR9 default-drive translation (CCP sentinel 0 -> 2 / B:), and
+; composes the canonical display form into filename_buffer via
+; the shared fileio_compose_filename_buffer helper.
+;
+; FR9 rationale: CCP encodes "no drive prefix on the command tail"
+; as drive byte 0 (the currently-selected drive at command time).
+; VIBE's FR9 overrides this to always-B: for bare filenames,
+; matching :e's text-form parse behaviour (fileio_parse_filename's
+; .no_drive path also sets B:). A user on A: typing `vibe foo.fs`
+; will see B:FOO.FS in the status row — intentional and AR16-spec.
+;
+; FR10 pass-through: drive byte > 0 from CCP is used as-is;
+; A:foo -> drive 1, B:foo -> drive 2, etc.
+;
+; In:      (none — reads DEFAULT_FCB at 0x005C)
+; Out:     fcb_scratch populated (drive + basename + ext at +0..+11;
+;          zero at +12..+35); filename_buffer populated with the
+;          canonical display name (e.g. "B:HELLO.TXT\0").
+; Trashes: A, BC, DE, HL, F.
+; Calls:   fileio_compose_filename_buffer (via tail-JP).
+; ----------------------------------------------------------------
+fileio_setup_from_default_fcb:
+    ;; Step 1: copy DEFAULT_FCB[0..11] -> fcb_scratch[0..11].
+    LD      HL, DEFAULT_FCB
+    LD      DE, fcb_scratch
+    LD      BC, 12
+    LDIR
+
+    ;; Step 2: zero fcb_scratch[12..35] (24 bytes). Prior state
+    ;; may be residue from a previous :e load's parse.
+    LD      HL, fcb_scratch + 12
+    XOR     A
+    LD      (HL), A
+    LD      DE, fcb_scratch + 13
+    LD      BC, 23
+    LDIR
+
+    ;; Step 3: FR9 translation — drive 0 (CCP sentinel) -> 2 (B:).
+    LD      A, (fcb_scratch)
+    OR      A
+    JR      NZ, .skip_fr9
+    LD      A, 2
+    LD      (fcb_scratch), A
+.skip_fr9:
+
+    ;; Step 4: compose canonical display name into filename_buffer.
+    JP      fileio_compose_filename_buffer  ; tail-JP
+
+
+;; ============================================================
+;; --- Internal helper: fileio_compose_new_file_status (Story 2.3) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; fileio_compose_new_file_status
+; Build "<filename> [new file]\0" in fileio_status_scratch from
+; the NUL-terminated filename_buffer + the static suffix
+; fileio_msg_new_file_suffix (" [new file]\0"). Used by the
+; launch path on BDOS_OPEN failure (AC4) to surface the vi-canonical
+; "[new file]" banner.
+;
+; Capacity: filename_buffer (max 15 chars excl NUL) + suffix
+; (11 chars) + NUL = 27 bytes. Well within the existing 48-byte
+; fileio_status_scratch ceiling.
+;
+; In:      (none — reads filename_buffer + fileio_msg_new_file_suffix)
+; Out:     fileio_status_scratch contains the composed banner;
+;          HL = fileio_status_scratch (ready for status_set_message).
+; Trashes: A, DE, HL, F.
+; ----------------------------------------------------------------
+fileio_compose_new_file_status:
+    LD      HL, filename_buffer
+    LD      DE, fileio_status_scratch
+.copy_filename:
+    LD      A, (HL)
+    OR      A
+    JR      Z, .filename_done
+    LD      (DE), A
+    INC     HL
+    INC     DE
+    JR      .copy_filename
+.filename_done:
+    ;; Copy suffix " [new file]\0" through the NUL terminator.
+    LD      HL, fileio_msg_new_file_suffix
+.copy_suffix:
+    LD      A, (HL)
+    LD      (DE), A
+    OR      A
+    JR      Z, .done
+    INC     HL
+    INC     DE
+    JR      .copy_suffix
+.done:
+    LD      HL, fileio_status_scratch
     RET
 
 
@@ -437,7 +737,42 @@ fileio_parse_filename:
     DEC     B
     JR      .ext_loop
 
-.done_parse:
+
+;; ============================================================
+;; --- Internal helper: fileio_compose_filename_buffer ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; fileio_compose_filename_buffer
+; Compose the canonical display form ("<drive>:<basename>[.<ext>]\0")
+; into filename_buffer from the FCB-form bytes already laid down in
+; fcb_scratch — drive byte at +0 (1=A:, 2=B:, ...); 8-char space-
+; padded uppercase basename at +1..+8; 3-char space-padded uppercase
+; extension at +9..+11. Trims trailing spaces from both basename
+; and extension; omits the '.' delimiter when the extension is
+; empty (all spaces). NUL-terminates the result.
+;
+; Story 2.2 inlined this composition at the tail of
+; fileio_parse_filename (label `.done_parse`). Story 2.3 extracts
+; it as a named entry so fileio_load_initial — which already has
+; the FCB-form bytes in fcb_scratch from the CCP-populated
+; DEFAULT_FCB — can compose the display form without going through
+; the text-form parse.
+;
+; Layout note: `.done_parse:` (the Story-2.2 local-label entry from
+; fileio_parse_filename) and `fileio_compose_filename_buffer:` (the
+; Story-2.3 named entry) sit on consecutive lines — both labels
+; resolve to the same address, both routes are byte-identical.
+; The dotted-local references from inside fileio_parse_filename's
+; body (`JR Z, .done_parse`) still target the same address.
+;
+; In:      (none — reads fcb_scratch)
+; Out:     filename_buffer populated (NUL-terminated).
+; Trashes: A, BC, DE, HL, F.
+; Calls:   (none)
+; ----------------------------------------------------------------
+.done_parse:                            ; fileio_parse_filename's Story-2.2 tail label
+fileio_compose_filename_buffer:         ; Story-2.3 named entry — same address
     ;; Compose canonical display form into filename_buffer.
     LD      A, (fcb_scratch)
     ADD     A, 'A' - 1                      ; drive byte -> letter
@@ -751,6 +1086,13 @@ fileio_status_scratch:
 
 fileio_msg_cant_open_prefix:
     DEFB    "can't open ", 0                ; 11 chars + NUL (AR16)
+
+; Story 2.3: " [new file]" suffix appended to filename_buffer when
+; vibe FILENAME launches with a not-yet-on-disk name. Composed
+; dynamically by fileio_compose_new_file_status into
+; fileio_status_scratch and emitted via status_set_message.
+fileio_msg_new_file_suffix:
+    DEFB    " [new file]", 0                ; 11 chars + NUL (AR16)
 
 ; 16-bit scratch for fileio_u16_to_dec output-pointer marshalling.
 ; The trial-subtract loop uses DE for the divisor, so the dest

@@ -147,6 +147,10 @@
 
     JP      test_pass
 
+;; ----- LOCAL init_teardown stub (Story 2.3) -----
+init_teardown:
+    RET
+
 ;; ----- test_pass / test_fail labels -----
     INCLUDE "../inc/test_epilogue.inc"
 
@@ -155,6 +159,9 @@
     INCLUDE "../../src/render.asm"
     INCLUDE "../../src/dispatch.asm"
     INCLUDE "../../src/parser.asm"
+    INCLUDE "../../src/gapbuf.asm"
+    INCLUDE "../../src/exline.asm"
+    INCLUDE "../../src/fileio.asm"
 
 ;; ----- input_loop stub (resolves bdos_error_funnel symbol) -----
     INCLUDE "../inc/test_input_loop_stub.inc"

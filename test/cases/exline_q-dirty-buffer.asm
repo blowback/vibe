@@ -138,7 +138,12 @@ init_teardown_called:    DEFB 0
     INCLUDE "../../src/render.asm"
     INCLUDE "../../src/dispatch.asm"
     INCLUDE "../../src/parser.asm"
+    INCLUDE "../../src/gapbuf.asm"
     INCLUDE "../../src/exline.asm"
+    ;; Story 2.2 / 2.3 pull-forward: exline.asm now references
+    ;; fileio_load + fileio_strip_leading_spaces (cmd_edit / cmd_edit_force);
+    ;; INCLUDE fileio.asm to resolve those forward references at build time.
+    INCLUDE "../../src/fileio.asm"
 
 ;; ----- input_loop stub (resolves bdos_error_funnel symbol) -----
     INCLUDE "../inc/test_input_loop_stub.inc"

@@ -120,6 +120,15 @@ MBB_SET_USR_INT EQU test_mbb_set_usr_int
     XOR     A
     LD      (test_capture_len), A
 
+    ;; Story 2.3: pre-set DEFAULT_FCB + 1 to a space so Stage 5's
+    ;; fileio_load_initial takes the no-arg short-circuit (mirroring
+    ;; the CCP space-pad invariant for `vibe` with no command-line
+    ;; argument). Without this, iz-cpm's default-FCB contents at
+    ;; .com launch could vary between host environments and cause
+    ;; the test to attempt an unwanted load.
+    LD      A, ' '
+    LD      (DEFAULT_FCB + 1), A
+
     ;; Hand control to init_cold_start. init_cold_start's
     ;; stage-6 JP input_loop transfers control to the local
     ;; verifier defined below — there is no return path from
@@ -292,6 +301,12 @@ test_mbb_set_usr_int:
     INCLUDE "../../src/render.asm"
     INCLUDE "../../src/dispatch.asm"
     INCLUDE "../../src/parser.asm"
+    ;; Story 2.3: init.asm Stage 5 now calls fileio_load_initial;
+    ;; the exline + fileio modules are pulled in (in AR25 order)
+    ;; so the test build resolves cmd_edit / fileio_load_initial
+    ;; forward references inside dispatch.asm / init.asm.
+    INCLUDE "../../src/exline.asm"
+    INCLUDE "../../src/fileio.asm"
 
 ;; ----- state.inc LAST (positional anchor: static_data_base = $) -----
     INCLUDE "../../inc/state.inc"
