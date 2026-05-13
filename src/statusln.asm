@@ -10,7 +10,9 @@
 ; Public:
 ;   status_set_message   ; MC5 funnel: HL = msg ptr, A = optional code
 ;   bdos_error_funnel    ; abort path entered from BDOS_CALL on JP M
-;   status_render        ; render stub (Story 1.11 lands the real body)
+;   ; (Story 1.5's status_render stub was retired in Story 1.11 —
+;   ; the READ/EMIT path for status_buffer / status_dirty lives in
+;   ; src/render.asm now; this module owns the WRITE path only.)
 ;
 ;   Message strings (AR16 — co-located here, all modules read by symbol):
 ;     msg_buffer_modified, msg_file_too_large, msg_pattern_not_found,
@@ -32,10 +34,6 @@
 ;                        Out: (does not return; JP input_loop)
 ;                        Trashes: A, BC, DE, HL, F
 ;                        Calls: status_set_message
-;   status_render:       In: (none)
-;                        Out: status_dirty cleared
-;                        Trashes: A, F
-;                        Calls: (none)
 ;
 ; Dependencies:
 ;   inc/equates.inc  (STATUS_LINE_WIDTH)
@@ -133,25 +131,6 @@ bdos_error_funnel:
     JP      input_loop              ; abort current operation:
                                     ; Story 1.5 stub warm-boots;
                                     ; Story 1.8 lands the real loop
-
-; ----------------------------------------------------------------
-; status_render
-; Render the status row to the screen if status_dirty is set.
-;
-; STORY 1.5 STUB: clears status_dirty and returns. No VT52 emit,
-; no BIOS_CONOUT, no shadow_buffer touch. Story 1.11 (render
-; pipeline) replaces this body with the real diff'd VT52 emit
-; mirroring the main render path (architecture lines 1495-1499).
-;
-; In:      (none)
-; Out:     status_dirty = 0
-; Trashes: A, F
-; Calls:   (none)
-; ----------------------------------------------------------------
-status_render:
-    XOR     A
-    LD      (status_dirty), A
-    RET
 
 ;; ============================================================
 ;; --- Internal helpers ---

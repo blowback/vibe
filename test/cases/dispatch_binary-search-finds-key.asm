@@ -31,6 +31,7 @@
     INCLUDE "../../inc/bios.inc"
     INCLUDE "../../inc/bdos.inc"
     INCLUDE "../../inc/modes.inc"
+    INCLUDE "../../inc/vt52.inc"
 
 ;; --- ORG 0x0100, sentinel pre-zero, test_start ---
     INCLUDE "../inc/test_prologue.inc"
@@ -166,6 +167,8 @@ test_unbound:
 ;; ----- Production code under test (AR25 INCLUDE order) -----
     INCLUDE "../../src/statusln.asm"
     INCLUDE "../../src/dispatch.asm"
+    INCLUDE "../../src/parser.asm"
+    INCLUDE "../../src/render.asm"
 
 ;; ----- input_loop stub (resolves bdos_error_funnel symbol) -----
     INCLUDE "../inc/test_input_loop_stub.inc"

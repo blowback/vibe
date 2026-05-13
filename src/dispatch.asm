@@ -90,6 +90,9 @@
 ;                     by dispatch_normal's '0'..'9', operators,
 ;                     and 'g' entries — forward-referenced via
 ;                     sjasmplus two-pass assembly)
+;   src/render.asm   (Story 1.11 — render_full, the real Ctrl-L
+;                     full-redraw target; replaces the Story 1.5
+;                     stub body of mode_full_refresh_stub)
 ; ============================================================
 
 ;; ============================================================
@@ -285,19 +288,21 @@ enter_visual_mode:
 
 ; ----------------------------------------------------------------
 ; mode_full_refresh_stub
-; Bound to Ctrl-L (0x0C) in dispatch_normal. Story 1.11 replaces
-; with the real render-pipeline full-refresh path.
+; Ctrl-L full-redraw handler (FR48, NFR7). Bound to 0x0C in
+; dispatch_normal. The Story 1.5 stub body (msg_not_implemented)
+; was replaced by Story 1.11 with a tail-JP into render_full;
+; see src/render.asm. The `_stub` suffix is retained so the
+; dispatch_normal table entry need not move.
 ;
 ; In:      A = 0x0C (MC4)
-; Out:     status line = "not yet implemented"
-; Trashes: A, BC, DE, HL, F
-; Calls:   status_set_message
+; Out:     screen fully redrawn from buffer state (FR48, NFR7);
+;          shadow_buffer synced; dirty_rows cleared; cursor
+;          repositioned (RI4).
+; Trashes: A, BC, DE, HL, IX, F (render_full's transitive clobber)
+; Calls:   render_full (tail-JP)
 ; ----------------------------------------------------------------
 mode_full_refresh_stub:
-    LD      HL, msg_not_implemented
-    XOR     A
-    CALL    status_set_message
-    RET
+    JP      render_full
 
 ; ----------------------------------------------------------------
 ; mode_search_prompt_stub

@@ -1440,8 +1440,10 @@ tier additions (multi-level undo, marks, macros) will accrete.
   the status row directly; all error/info paths funnel through
   `status_set_message`.
 - `render.asm` is the single screen-emission path. No other module
-  calls `BIOS_CONOUT` directly. (Init's initial clear-screen is the
-  exception, declared explicitly.)
+  calls `BIOS_CONOUT` directly. (Story 1.11 retired the init.asm
+  initial-clear carve-out: `render_init` now emits the `ESC J`
+  itself as the first step of cold-start, so `init.asm` no longer
+  needs a CONOUT exception.)
 - `bdos.inc`'s `BDOS_CALL` macro is the single BDOS gateway (MC6).
   Raw `CALL 0x0005` is forbidden by convention.
 - `dispatch.asm` is the only module with knowledge of per-mode key
@@ -1455,7 +1457,7 @@ itself; there are no networks, services, or third-party APIs.
 | Boundary | Surface | Direction | Module |
 |---|---|---|---|
 | Keyboard | `BIOS_CONIN` / `BIOS_CONINST` | read | `input.asm` |
-| Screen | `BIOS_CONOUT` | write | `render.asm`, `init.asm` |
+| Screen | `BIOS_CONOUT` | write | `render.asm` |
 | Filesystem | BDOS open/read/write/close (FCB) | read+write | `fileio.asm` |
 | Tick (50Hz) | BIOS tick counter (memory address) | read | `input.asm` |
 | Termination | BDOS function 0 (warm boot) | write | `init.asm`, `exline.asm` (`:q`) |

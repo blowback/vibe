@@ -4,7 +4,7 @@
 ;          invariant and is the single buffer-mutation owner
 ;          (AR14): all edits to the gap buffer enter through
 ;          gapbuf_insert / gapbuf_delete / gapbuf_move_gap.
-;          Pure-memory module — no BDOS, no BIOS_CONOUT
+;          Pure-memory module — no BDOS, no console emit
 ;          (AR15: gapbuf does not invoke the BDOS entry vector
 ;          or the BDOS macro; AC11 grep enforces).
 ;

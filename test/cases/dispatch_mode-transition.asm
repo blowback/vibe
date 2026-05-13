@@ -29,8 +29,11 @@
 ;   0xE7 — Esc-from-VISUAL did not set mode_byte = MODE_NORMAL
 ;   0xE8 — Esc-from-VISUAL cleared visual_submode (header invariant
 ;          at src/dispatch.asm:16-21 says it MUST remain VIS_CHAR)
-;   0xE9 — Ctrl-L in NORMAL did not set status_dirty (stub did
-;          not run; production-table layout regression)
+;   0xE9 — Ctrl-L in NORMAL did not clear dirty_rows[0] (the
+;          new Story-1.11 handler tail-JPs to render_full, which
+;          marks-all then runs render_diff — render_diff's
+;          terminal step zeroes dirty_rows[0..2]; a routing miss
+;          would leave the pre-call 0x01 bit in place).
 ;   0xEA — '/' in NORMAL did not set status_dirty (stub did not
 ;          run; production-table layout regression)
 ;   0xEB — 'a' in NORMAL did not set mode_byte = MODE_INSERT (the
@@ -42,9 +45,18 @@
 
 ;; --- Pre-ORG production headers (pure EQU; safe before ORG) ---
     INCLUDE "../../inc/equates.inc"
+;; BIOS_CONOUT override — Story 1.11's Ctrl-L handler tail-JPs
+;; into render_full, which emits bytes via BIOS_CONOUT. The
+;; iz-cpm host does not install a BIOS at 0xFA0C (a Story-1.12
+;; W1 placeholder), so calling the production address triggers
+;; a cold restart. Capturing the bytes locally keeps the test
+;; self-contained and observable.
+    DEFINE BIOS_CONOUT_OVERRIDE
+BIOS_CONOUT EQU test_bios_conout
     INCLUDE "../../inc/bios.inc"
     INCLUDE "../../inc/bdos.inc"
     INCLUDE "../../inc/modes.inc"
+    INCLUDE "../../inc/vt52.inc"
 
 ;; --- ORG 0x0100, sentinel pre-zero, test_start ---
     INCLUDE "../inc/test_prologue.inc"
@@ -160,20 +172,58 @@
     JP      test_fail
 .ok_visual_preserved:
 
-    ;; Step 7: Ctrl-L in NORMAL → mode_full_refresh_stub.
-    ;; Verifies the production dispatch_normal layout actually
-    ;; resolves 0x0C to the stub: pre-zero status_dirty, dispatch,
-    ;; assert status_dirty was set (the stub's only observable
-    ;; side effect via status_set_message). Mode_byte stays NORMAL.
+    ;; Step 7: Ctrl-L in NORMAL → mode_full_refresh_stub (which,
+    ;; post-Story-1.11, tail-JPs to render_full). Verifies the
+    ;; production dispatch_normal layout still resolves 0x0C
+    ;; correctly AND the new handler runs render_full's clear-
+    ;; dirty-rows post-condition. Mode_byte stays NORMAL.
+    ;;
+    ;; Setup is the minimum state render_diff needs to walk the
+    ;; (empty) buffer without reading garbage memory: gap covers
+    ;; the entire payload (file_length = 0), cursor at top of
+    ;; visible window, shadow seeded with 0x20 so the row-walk's
+    ;; per-cell diff finds nothing to emit. Pre-set dirty_rows[0]
+    ;; = 0x01 so we observe the post-call zeroing; render_full's
+    ;; mark-all-dirty then sets it to 0xFF, render_diff's terminal
+    ;; clear zeroes it back. status_dirty stays 0 throughout.
+    ;;
+    ;; The emit stream this produces (cursor reposition only —
+    ;; ESC 'Y' 0x20 0x20, 4 bytes) is captured by the
+    ;; test_bios_conout stub installed at the top of this file
+    ;; (DEFINE BIOS_CONOUT_OVERRIDE / BIOS_CONOUT EQU
+    ;; test_bios_conout). The bytes never reach iz-cpm stdout
+    ;; and so cannot collide with the harness' `\bPASS\b` /
+    ;; `\bFAIL\b` regex. This step doesn't read the captured
+    ;; bytes — it only verifies the post-call state (mode_byte,
+    ;; dirty_rows, top_line_offset).
+    LD      HL, GAP_BUFFER_BASE
+    LD      (gap_start), HL
+    LD      HL, GAP_BUFFER_BASE + GAP_BUFFER_MAX
+    LD      (gap_end), HL
+    LD      HL, 0
+    LD      (top_line_offset), HL
+    LD      (cursor_offset), HL
+    LD      HL, shadow_buffer
+    LD      (HL), 0x20
+    LD      DE, shadow_buffer + 1
+    LD      BC, SCREEN_ROWS * SCREEN_COLS - 1
+    LDIR
     XOR     A
     LD      (status_dirty), A
+    LD      A, 0x01
+    LD      (dirty_rows), A
+    XOR     A
+    LD      (dirty_rows + 1), A
+    LD      (dirty_rows + 2), A
+
     LD      A, 0x0C
     LD      HL, dispatch_normal
     LD      B, DISPATCH_NORMAL_COUNT
     CALL    dispatch_key
-    LD      A, (status_dirty)
+
+    LD      A, (dirty_rows)
     OR      A
-    JR      NZ, .ok_ctrl_l
+    JR      Z, .ok_ctrl_l
     LD      B, A
     LD      A, 0xE9
     JP      test_fail
@@ -219,12 +269,17 @@
 
     JP      test_pass
 
+;; ----- Capture stub for BIOS_CONOUT override -----
+    INCLUDE "../inc/test_bios_conout_capture.inc"
+
 ;; ----- test_pass / test_fail labels -----
     INCLUDE "../inc/test_epilogue.inc"
 
 ;; ----- Production code under test (AR25 INCLUDE order) -----
     INCLUDE "../../src/statusln.asm"
     INCLUDE "../../src/dispatch.asm"
+    INCLUDE "../../src/parser.asm"
+    INCLUDE "../../src/render.asm"
 
 ;; ----- input_loop stub (resolves bdos_error_funnel symbol) -----
     INCLUDE "../inc/test_input_loop_stub.inc"

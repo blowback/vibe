@@ -1,5 +1,5 @@
 # generated: 2026-05-08
-# last_updated: 2026-05-10 (story 1.10 → done: code review applied 9 patches — parser.asm comment fixes (parser_clear shape, leading-zero rationale, motion-zero-stub tail-unwind note) + 6 test-coverage strengthenings (yy/dyy/wrap/g-then-0/AC10 prefix-zero/AC11 op-unchanged); 5 deferred items recorded in deferred-work.md; vibe.com SHA unchanged at 2a894870 — patches were doc/test only)
+# last_updated: 2026-05-11 (story 1.11 → review: render pipeline shipped — 1182 lines in src/render.asm; AR13 / AR14 / AR15 grep sweeps clean; byte-identical rebuild SHA 722569ef…0d7c0b1; 22 pass / 1 deliberate-fail across 23 headless tests including 5 new render_* cases; status_render stub retired from statusln.asm; Ctrl-L handler in dispatch.asm tail-JPs to render_full; inc/bios.inc gained BIOS_CONOUT_OVERRIDE / BIOS_TICK_ADDR_OVERRIDE IFNDEF guards; Story-1.2 VT52_GOTO clamp and Story-1.3 shadow_buffer-alignment deferrals resolved in deferred-work.md)
 # project: vibe
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-05-08
-last_updated: 2026-05-10
+last_updated: 2026-05-11  # 1-11 → done (code review applied 9 patches; build SHA 72dadeb0...; 22 pass / 1 deliberate-fail)
 project: vibe
 project_key: NOKEY
 tracking_system: file-system
@@ -53,7 +53,7 @@ development_status:
   1-8-input-layer-with-esc-arrow-disambiguation: done
   1-9-mode-dispatch-with-sparse-table-binary-search: done
   1-10-command-parser-count-pending-operator-motion-prefix: done
-  1-11-render-pipeline-with-dirty-rows-scroll-ctrl-l: backlog
+  1-11-render-pipeline-with-dirty-rows-scroll-ctrl-l: done
   1-12-init-teardown-on-hardware-smoke-test: backlog
   epic-1-retrospective: optional
   epic-2: backlog

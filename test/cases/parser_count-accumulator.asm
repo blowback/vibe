@@ -25,6 +25,7 @@
     INCLUDE "../../inc/bios.inc"
     INCLUDE "../../inc/bdos.inc"
     INCLUDE "../../inc/modes.inc"
+    INCLUDE "../../inc/vt52.inc"
 
 ;; --- ORG 0x0100, sentinel pre-zero, test_start ---
     INCLUDE "../inc/test_prologue.inc"
@@ -151,6 +152,7 @@
 
 ;; ----- Production code under test (AR25 INCLUDE order) -----
     INCLUDE "../../src/statusln.asm"
+    INCLUDE "../../src/render.asm"
     INCLUDE "../../src/dispatch.asm"
     INCLUDE "../../src/parser.asm"
 

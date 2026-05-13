@@ -21,7 +21,8 @@
 ;   inc/equates.inc, inc/bios.inc, inc/bdos.inc, inc/vt52.inc,
 ;   inc/modes.inc, inc/state.inc; src/input.asm (Story 1.8);
 ;   src/statusln.asm (Story 1.5); src/gapbuf.asm (Story 1.7);
-;   src/dispatch.asm (Story 1.9); src/parser.asm (Story 1.10)
+;   src/render.asm (Story 1.11); src/dispatch.asm (Story 1.9);
+;   src/parser.asm (Story 1.10)
 ; ============================================================
 
 ;; --- Compile-time-constant includes (dependency order per AR25) ---
@@ -64,11 +65,20 @@
 ; exercise the primitives standalone.
     INCLUDE "gapbuf.asm"
 
+;; --- Render pipeline (RI1-RI4; render.asm — Story 1.11) ---
+; AR25 order: gapbuf -> render -> dispatch. render.asm owns
+; shadow_buffer, dirty_rows, top_line_offset, and the single
+; screen-emission path (AR13). Production callers of render_diff /
+; render_full arrive in Story 1.12 (the input_loop body wires
+; input_get_key + dispatch_key + render_diff together; the
+; Ctrl-L handler in dispatch.asm calls render_full).
+    INCLUDE "render.asm"
+
 ;; --- Mode dispatcher (MC3; dispatch.asm — Story 1.9) ---
-; AR25 order: gapbuf -> render -> dispatch -> parser. render.asm
-; (Story 1.11) does not yet exist; when it lands it will slot in
-; BEFORE dispatch.asm here. Production callers of dispatch_key
-; arrive in Story 1.12 (the input_loop body wires
+; AR25 order: render -> dispatch -> parser. render.asm (Story 1.11)
+; is INCLUDEd above; dispatch.asm's Ctrl-L handler tail-JPs to
+; render_full from src/render.asm. Production callers of
+; dispatch_key arrive in Story 1.12 (the input_loop body wires
 ; input_get_key + dispatch_key + render_diff together).
     INCLUDE "dispatch.asm"
 

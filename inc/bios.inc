@@ -32,7 +32,18 @@
 ; or the editor will not run on real hardware.
 BIOS_CONIN     EQU 0xFA06   ; blocking byte read from console
 BIOS_CONINST   EQU 0xFA09   ; nonzero in A if a byte is ready
+; BIOS_CONOUT is wrapped in IFNDEF so test cases can override it
+; (AC17 of Story 1.11). The guard tests a DEFINE-marker rather
+; than the EQU symbol itself because sjasmplus 1.23.0's IFNDEF
+; recognises DEFINE-created names but not EQU-created ones. Test
+; cases that want a capture stub: `DEFINE BIOS_CONOUT_OVERRIDE`
+; followed by `BIOS_CONOUT EQU <stub addr>` BEFORE INCLUDEing
+; this header. Production code does not set the marker; the
+; IFNDEF falls through to the placeholder EQU with zero effect
+; on vibe.com bytes.
+    IFNDEF BIOS_CONOUT_OVERRIDE
 BIOS_CONOUT    EQU 0xFA0C   ; emit byte in C to console
+    ENDIF
 
 ;; --- CP/M zero-page well-known addresses ---
 ; CP/M 2.2 conventions — NOT MicroBeast-specific, NOT W1 placeholders.
