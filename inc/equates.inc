@@ -31,6 +31,11 @@
 GAP_BUFFER_MAX        EQU 32768   ; Max editable text payload (bytes) — 0x8000, see note below
 UNDO_BUFFER_SIZE      EQU 256     ; Single-level undo journal (bytes) — 16-bit only
 EX_COMMAND_BUFFER     EQU 64      ; Ex (:) command-line buffer (bytes)
+                                    ; Length byte is 8-bit; bumping the
+                                    ; equate past 255 breaks the
+                                    ; CP EX_COMMAND_BUFFER check in
+                                    ; exline_append_literal (silent wrap).
+    ASSERT EX_COMMAND_BUFFER < 256
 SEARCH_PATTERN_BUFFER EQU 64      ; Last-search pattern buffer (bytes)
 YANK_BUFFER_SIZE      EQU 1024    ; Yank/put register (bytes) — 16-bit only
 FILENAME_BUFFER_SIZE  EQU 16      ; CP/M filename text form: drive:8.3 + NUL + slack

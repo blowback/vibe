@@ -34,6 +34,14 @@
 ;          sited; no other emit path can compose an unclamped
 ;          GOTO sequence.
 ;
+;          COMMAND-mode cursor target (Story 2.1 / AC11): the
+;          trailing RI4 cursor emit in `render_diff` reads
+;          mode_byte; on MODE_COMMAND the cursor row/col is
+;          overridden to (STATUS_ROW, 1 + ex_buffer length) so
+;          the ESC Y lands on the status row after the ':' prompt
+;          glyph. The override is single-sited (here only) and
+;          decays to a no-op outside COMMAND.
+;
 ; Public:
 ;   render_init             ; clear screen, seed shadow, zero
 ;                           ; dirty_rows / top_line_offset,
@@ -74,6 +82,12 @@
 ;                           ; READ for the SR3 two-halves walk
 ;                           ; (cell content lookup). Never WRITTEN
 ;                           ; (AR14 — only gapbuf.asm mutates).
+;   mode_byte               ; READ by render_diff for the AC11
+;                           ; COMMAND-mode cursor-target override
+;                           ; (Story 2.1).
+;   ex_buffer               ; READ (length byte only) by render_diff
+;                           ; to compute the COMMAND-mode cursor
+;                           ; column = 1 + length (Story 2.1).
 ;
 ; Register conventions (across public entry points):
 ;   render_init:            In:  (none)
@@ -138,11 +152,14 @@
 ;                     DIRTY_ROWS_BITMAP_BYTES, GAP_BUFFER_MAX)
 ;   inc/state.inc    (shadow_buffer, dirty_rows, top_line_offset,
 ;                     cursor_offset, gap_start, gap_end,
-;                     status_buffer, status_dirty, GAP_BUFFER_BASE)
+;                     status_buffer, status_dirty, GAP_BUFFER_BASE,
+;                     mode_byte, ex_buffer — last two added by
+;                     Story 2.1 for the AC11 cursor override)
 ;   inc/bios.inc     (BIOS_CONOUT — the one BIOS entry point this
 ;                     module touches)
 ;   inc/vt52.inc     (VT52_ESC, VT52_CURSOR_HOME, VT52_ERASE_TO_EOS,
 ;                     VT52_GOTO, VT52_COORD_BIAS)
+;   inc/modes.inc    (MODE_COMMAND — Story 2.1 / AC11)
 ;   src/statusln.asm (state collaborator only — render reads
 ;                     status_buffer / status_dirty by state.inc
 ;                     symbol; no function-call dependency)
@@ -358,6 +375,13 @@ render_full:
 ;   6. Cursor reposition (RI4 defensive). Emit one ESC Y at the
 ;      cursor's row/col as the LAST bytes of the frame — even if
 ;      no cells changed. Cursor desync alone never compounds.
+;      Story 2.1 / AC11: in MODE_COMMAND the row/col cached by
+;      step 2 is overridden to (STATUS_ROW, 1 + ex_buffer length)
+;      before the emit so the cursor lands at the trailing edge
+;      of the ':' prompt + typed content.
+;
+; Reads (Story 2.1): mode_byte, ex_buffer (length byte) — for
+;          the AC11 COMMAND-mode cursor-target override above.
 ;
 ; In:      (none — every input is a state.inc field)
 ; Out:     screen updated; shadow_buffer synced; dirty_rows = 0;
@@ -381,6 +405,23 @@ render_diff:
     LD      (dirty_rows + 1), A
     LD      (dirty_rows + 2), A
 
+    ;; --- Story 2.1 / AC11: mode-aware cursor target ---
+    ;; In MODE_COMMAND the cursor sits on the status row at
+    ;; col (1 + ex_buffer length), with the ':' glyph at col 0.
+    ;; Override render_cursor_row / col before the trailing
+    ;; RI4 emit so the ESC Y goes to the right place. The
+    ;; override is a no-op in every other mode (the values set
+    ;; by render_scroll_adjust survive).
+    LD      A, (mode_byte)
+    CP      MODE_COMMAND
+    JR      NZ, .cursor_emit
+    LD      A, STATUS_ROW
+    LD      (render_cursor_row), A
+    LD      A, (ex_buffer)              ; length byte
+    INC     A                           ; +1 for the ':' prefix
+    LD      (render_cursor_col), A
+
+.cursor_emit:
     ;; Final cursor reposition (RI4). emit_goto clamps both
     ;; coordinates before adding the VT52 bias.
     LD      A, (render_cursor_col)

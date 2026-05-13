@@ -7,9 +7,10 @@
 ;          key handler. Owns the four mode tables, the four
 ;          mode-change handlers, and the four unbound handlers.
 ;          Pure metadata module — no buffer mutation (AR14),
-;          no screen emission (AR13), no raw BDOS (AR15: the
-;          single BDOS use site is BDOS_CALL BDOS_EXIT in
-;          mode_debug_quit).
+;          no screen emission (AR13), no raw BDOS (AR15: clean
+;          — Story 2.1 retired the Story-1.12 mode_debug_quit
+;          BDOS_CALL BDOS_EXIT carve-out when :q / :q! arrived
+;          via exline.asm).
 ;
 ;          Mode-state coupling captured here (one third of the
 ;          deferred state.inc protocol, Story 1.3 deferral): a
@@ -34,15 +35,12 @@
 ;   dispatch_visual
 ;   unbound_normal                ; per-mode unbound-key handlers
 ;   unbound_insert
-;   unbound_command
 ;   unbound_visual
 ;   enter_normal_mode             ; mode-change handlers (FR12-16)
 ;   enter_insert_mode
-;   enter_command_mode
 ;   enter_visual_mode
 ;   mode_full_refresh_stub        ; Ctrl-L  — Story 1.11 lands real
 ;   mode_search_prompt_stub       ; /       — Story 3.1 lands real
-;   mode_debug_quit               ; Ctrl-Q  — tail-JP to init_teardown
 ;   DISPATCH_NORMAL_COUNT         ; per-table entry-count equates
 ;   DISPATCH_INSERT_COUNT
 ;   DISPATCH_COMMAND_COUNT
@@ -75,9 +73,7 @@
 ;                           (via status_set_message). RET to
 ;                           dispatch_key's caller.
 ;                      Trashes: A, BC, DE, HL, F (status_set_message).
-;                      Calls: status_set_message (most), or
-;                             init_teardown via tail-JP
-;                             (mode_debug_quit — see src/init.asm).
+;                      Calls: status_set_message (most).
 ;
 ; Dependencies:
 ;   inc/modes.inc    (MODE_NORMAL/INSERT/COMMAND/VISUAL, VIS_CHAR)
@@ -93,8 +89,11 @@
 ;   src/render.asm   (Story 1.11 — render_full, the real Ctrl-L
 ;                     full-redraw target; replaces the Story 1.5
 ;                     stub body of mode_full_refresh_stub)
-;   src/init.asm     (Story 1.12 — init_teardown, for
-;                     mode_debug_quit's screen-clear-on-exit path)
+;   src/exline.asm   (Story 2.1 — exline_begin (':' entry),
+;                     exline_append_literal (unbound-prefix in
+;                     dispatch_command), exline_backspace,
+;                     exline_dispatch, exline_cancel; all
+;                     forward-referenced via sjasmplus two-pass)
 ; ============================================================
 
 ;; ============================================================
@@ -243,25 +242,6 @@ enter_insert_mode:
     RET
 
 ; ----------------------------------------------------------------
-; enter_command_mode
-; Entry from ':' in normal mode (FR14). Concrete ':'-line edit
-; handlers land in Story 2.1; this handler only flips mode and
-; surfaces the "-- command --" indicator.
-;
-; In:      A = ':' (MC4)
-; Out:     mode_byte = MODE_COMMAND; status indicator shown
-; Trashes: A, BC, DE, HL, F
-; Calls:   status_set_message
-; ----------------------------------------------------------------
-enter_command_mode:
-    LD      A, MODE_COMMAND
-    LD      (mode_byte), A
-    LD      HL, msg_mode_command
-    XOR     A
-    CALL    status_set_message
-    RET
-
-; ----------------------------------------------------------------
 ; enter_visual_mode
 ; Entry from 'v' in normal mode (FR15). Sets visual_submode to
 ; VIS_CHAR per AC7 ("update mode_byte and visual_submode if
@@ -321,27 +301,6 @@ mode_search_prompt_stub:
     XOR     A
     CALL    status_set_message
     RET
-
-; ----------------------------------------------------------------
-; mode_debug_quit
-; TEMPORARY exit handler — bound to Ctrl-Q (0x11) for the
-; Story 1.12 hardware bring-up. Tail-JPs to `init_teardown`
-; (src/init.asm), which clears the screen + warm-boots to CCP.
-; Removed in Story 2.1 when `:q` / `:q!` arrive as the proper
-; vi exit mechanism.
-;
-; In:      A = 0x11 (MC4)
-; Out:     does not return on a real CP/M host (init_teardown
-;          warm-boots via BDOS function 0; defensive RET in
-;          init_teardown returns here only on a misconfigured
-;          BIOS — then RETs to dispatch_key's caller back into
-;          the input loop, preserving NFR5).
-; Trashes: A, BC, DE, HL, F (init_teardown's chain)
-; Calls:   init_teardown (tail-JP — handles screen-clear +
-;          warm-boot; see src/init.asm)
-; ----------------------------------------------------------------
-mode_debug_quit:
-    JP      init_teardown
 
 
 ;; ============================================================
@@ -407,20 +366,6 @@ unbound_visual:
 unbound_insert:
     RET
 
-; ----------------------------------------------------------------
-; unbound_command
-; Entered from dispatch_key when the key is not in dispatch_command
-; (i.e. anything other than Esc). Story 2.1 lands the real
-; ex-line edit path; Story 1.9 stubs as a silent no-op.
-;
-; In:      A = key just consumed (MC4) — ignored by this stub
-; Out:     (none)
-; Trashes: F
-; Calls:   (none)
-; ----------------------------------------------------------------
-unbound_command:
-    RET
-
 
 ;; ============================================================
 ;; --- Per-mode dispatch tables (MC3) ---
@@ -446,10 +391,7 @@ dispatch_normal:
 .entries:
     DEFB    0x0C                        ; Ctrl-L  — full refresh stub (FR48)
     DEFW    mode_full_refresh_stub
-    ASSERT  0x11 > 0x0C
-    DEFB    0x11                        ; Ctrl-Q  — debug-quit (temporary)
-    DEFW    mode_debug_quit
-    ASSERT  '/' > 0x11
+    ASSERT  '/' > 0x0C
     DEFB    '/'                         ; '/'     — search prompt stub (3.1)
     DEFW    mode_search_prompt_stub
     ASSERT  '0' > '/'
@@ -483,8 +425,8 @@ dispatch_normal:
     DEFB    '9'
     DEFW    parser_handle_digit
     ASSERT  ':' > '9'
-    DEFB    ':'                         ; ':'     — enter command (FR14)
-    DEFW    enter_command_mode
+    DEFB    ':'                         ; ':'     — exline_begin (FR14, Story 2.1)
+    DEFW    exline_begin
     ASSERT  '<' > ':'
     DEFB    '<'                         ; '<'     — operator (FR39)
     DEFW    parser_handle_operator
@@ -528,10 +470,16 @@ dispatch_insert:
 DISPATCH_INSERT_COUNT EQU ($ - .entries) / 3
 
 dispatch_command:
-    DEFW    unbound_command
+    DEFW    exline_append_literal       ; unbound-prefix -> literal append (Story 2.1)
 .entries:
-    DEFB    0x1B                        ; Esc — return to NORMAL (FR16)
-    DEFW    enter_normal_mode
+    DEFB    0x08                        ; Backspace — exline_backspace
+    DEFW    exline_backspace
+    ASSERT  0x0D > 0x08
+    DEFB    0x0D                        ; Enter — exline_dispatch (Story 2.1)
+    DEFW    exline_dispatch
+    ASSERT  0x1B > 0x0D
+    DEFB    0x1B                        ; Esc — cancel (FR16, Story 2.1)
+    DEFW    exline_cancel
 DISPATCH_COMMAND_COUNT EQU ($ - .entries) / 3
 
 dispatch_visual:

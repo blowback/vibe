@@ -40,7 +40,8 @@
 ;   inc/modes.inc, inc/state.inc; src/init.asm (Story 1.12);
 ;   src/input.asm (Story 1.8); src/statusln.asm (Story 1.5);
 ;   src/gapbuf.asm (Story 1.7); src/render.asm (Story 1.11);
-;   src/dispatch.asm (Story 1.9); src/parser.asm (Story 1.10)
+;   src/dispatch.asm (Story 1.9); src/parser.asm (Story 1.10);
+;   src/exline.asm (Story 2.1)
 ; ============================================================
 
 ;; --- Compile-time-constant includes (dependency order per AR25) ---
@@ -104,11 +105,13 @@
 ; the Ctrl-L handler in dispatch.asm tail-JPs to render_full.
     INCLUDE "render.asm"
 
-;; --- Mode dispatcher (MC3; dispatch.asm — Story 1.9) ---
+;; --- Mode dispatcher (MC3; dispatch.asm — Story 1.9 / 2.1) ---
 ; AR25 order: render -> dispatch -> parser. Production callers
 ; wired in this story's input_loop body — see `input_loop:`
-; below. dispatch.asm's mode_debug_quit (Ctrl-Q) tail-JPs to
-; init_teardown for the screen-clear-on-exit path.
+; below. dispatch_command's table forward-references exline_*
+; handlers from src/exline.asm (Story 2.1); the BDOS_CALL
+; carve-out for mode_debug_quit was retired when :q / :q!
+; arrived (dispatch.asm is AR15-clean post-Story-2.1).
     INCLUDE "dispatch.asm"
 
 ;; --- Command parser (MC4; parser.asm — Story 1.10) ---
@@ -118,14 +121,26 @@
 ; story's input_loop body — see `input_loop:` below.
     INCLUDE "parser.asm"
 
-;; --- Main input loop (Story 1.12) ---
+;; --- Ex command-line (FR14, FR3, FR8; exline.asm — Story 2.1) ---
+; AR25 order: parser -> (motions / edits / visual / search yet
+; to land) -> exline -> fileio -> undo. With the intermediate
+; modules not yet present, exline slots in immediately after
+; parser; future stories (2.5 motions, 2.8-2.13 edits, 3.x
+; search/visual) will INCLUDE between parser.asm and exline.asm
+; as they arrive. dispatch_command's table forward-references
+; exline_begin / exline_append_literal / exline_backspace /
+; exline_dispatch / exline_cancel; sjasmplus's two-pass
+; assembly resolves them here.
+    INCLUDE "exline.asm"
+
+;; --- Main input loop (Story 1.12 / 2.1) ---
 ; Main input loop. Falls into here from `init_cold_start`
 ; (src/init.asm) and is re-entered by `bdos_error_funnel`'s
 ; JP from src/statusln.asm. Loop body: `input_get_key` ->
 ; per-mode demultiplex -> `dispatch_key` -> `render_diff` ->
-; repeat. Never returns to a caller — the only exit is via
-; `mode_debug_quit` -> `init_teardown` -> warm-boot (or, in a
-; future story, `:q` / `:q!` arriving in Story 2.1).
+; repeat. Never returns to a caller — the only exits are via
+; `cmd_quit` / `cmd_quit_force` (src/exline.asm) ->
+; `init_teardown` -> warm-boot.
 ;
 ; The body lands AFTER every src/ INCLUDE so the symbols it
 ; references (input_get_key, dispatch_normal/insert/command/

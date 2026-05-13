@@ -16,8 +16,8 @@
 ;                   yank_length, top_line_offset,
 ;                   input_tick_counter
 ;   Buffers:        status_buffer, search_pattern, ex_buffer,
-;                   filename_buffer, shadow_buffer, dirty_rows,
-;                   undo_buffer
+;                   ex_buffer_text, filename_buffer, shadow_buffer,
+;                   dirty_rows, undo_buffer
 ;   Reserved pool:  yank_buffer, yank_end
 ;
 ; State owned (read/write):
@@ -99,6 +99,12 @@ search_pattern        EQU static_data_base + static_off
 static_off            =   static_off + 1 + SEARCH_PATTERN_BUFFER
 ex_buffer             EQU static_data_base + static_off
 static_off            =   static_off + 1 + EX_COMMAND_BUFFER
+; Resolves Story-1.3 deferral on ex_buffer length-byte naming
+; convention (deferred-work.md). Positional EQU only — no
+; static_off advance, no bytes emitted. The sibling
+; search_pattern_text lands in Story 3.1 when search consumers
+; arrive (deliberately deferred to avoid an unused symbol now).
+ex_buffer_text        EQU ex_buffer + 1
 filename_buffer       EQU static_data_base + static_off
 static_off            =   static_off + FILENAME_BUFFER_SIZE
 shadow_buffer         EQU static_data_base + static_off

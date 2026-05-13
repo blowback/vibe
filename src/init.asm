@@ -15,10 +15,10 @@
 ;          screen-clear through render_init (so AR13's "render
 ;          owns the single screen-emission path" stays single-
 ;          sited) and warm-boots to CCP via BDOS function 0.
-;          Bound to Ctrl-Q for the Story-1.12 hardware bring-up
-;          via mode_debug_quit (src/dispatch.asm); Story 2.1's
-;          :q / :q! replaces mode_debug_quit and re-routes
-;          through init_teardown.
+;          Reached via tail-JP from cmd_quit / cmd_quit_force
+;          in src/exline.asm — the Story-2.1 :q / :q! handlers
+;          that retired the Story-1.12 mode_debug_quit bring-up
+;          shim.
 ;
 ;          Architectural carve-outs enforced here:
 ;            AR13 — init.asm does NOT call the BIOS console-out
@@ -47,7 +47,8 @@
 ;                     ; user ISR before the LDIR fill, then
 ;                     ; installs input_tick_isr via
 ;                     ; MBB_SET_USR_INT (resolves Story 1.4 W1).
-;   init_teardown     ; mode_debug_quit's target; warm-boots
+;   init_teardown     ; cmd_quit / cmd_quit_force's tail-JP
+;                     ; target (src/exline.asm); warm-boots
 ;                     ; to CCP via BDOS function 0 (no return
 ;                     ; on a real CP/M host; defensive RET).
 ;                     ; Uninstalls input_tick_isr before the
@@ -100,17 +101,16 @@
 ;                            status_set_message, render_full;
 ;                            falls through to input_loop.
 ;
-;   init_teardown:    In: (none — entered from mode_debug_quit
-;                          in src/dispatch.asm).
+;   init_teardown:    In: (none — entered via tail-JP from
+;                          cmd_quit / cmd_quit_force in
+;                          src/exline.asm).
 ;                     Out: screen cleared via ESC J + cursor
 ;                          home; control transfers to CCP via
 ;                          BDOS function 0 (warm-boot). Does
 ;                          not return on a real CP/M host; the
-;                          defensive RET mirrors the existing
-;                          mode_debug_quit precedent and keeps
-;                          the editor out of arbitrary memory
-;                          on a misconfigured BIOS-during-
-;                          bring-up (NFR5).
+;                          defensive RET keeps the editor out
+;                          of arbitrary memory on a misconfigured
+;                          BIOS-during-bring-up (NFR5).
 ;                     Trashes: A, BC, DE, HL, F.
 ;                     Calls: MBB_SET_USR_INT (stage 1 uninstall),
 ;                            render_init, the BDOS gateway
@@ -183,7 +183,8 @@ static_block_size       EQU static_end - static_data_base
 ;      MBB_SET_USR_INT (HL = 0). Vendor doc: ISRs survive warm
 ;      reboots, so this is defensive against a previous program
 ;      that didn't clean up — even a previous vibe.com run that
-;      crashed out of mode_debug_quit's tail-JP to init_teardown.
+;      crashed out of cmd_quit / cmd_quit_force's tail-JP to
+;      init_teardown.
 ;
 ;   Stage 1: Zero-init the entire static block (static_data_base
 ;      .. static_end) via the 1-byte-seed LDIR idiom. This
@@ -328,9 +329,9 @@ init_cold_start:
 
 ; ----------------------------------------------------------------
 ; init_teardown
-; Teardown / warm-boot path. Reused by mode_debug_quit (Ctrl-Q,
-; the Story-1.12 hardware-bring-up debug exit) and by Story 2.1's
-; :q / :q! when they arrive. Four numbered stages, in order:
+; Teardown / warm-boot path. Entered via tail-JP from cmd_quit
+; (':q' on a clean buffer) and cmd_quit_force (':q!') in
+; src/exline.asm. Four numbered stages, in order:
 ;
 ;   1. Uninstall our user ISR via MBB_SET_USR_INT (HL = 0). The
 ;      vendor BIOS doc warns user-ISRs survive warm reboots —
@@ -361,13 +362,13 @@ init_cold_start:
 ;
 ;   4. Defensive RET. Unreachable on every CP/M host the editor
 ;      supports (real MicroBeast + iz-cpm both honor function
-;      0); retained per the existing mode_debug_quit precedent
-;      at src/dispatch.asm so the editor stays out of arbitrary
-;      memory if a misconfigured BIOS-during-bring-up lets
-;      function 0 fall through. NFR5: never crash into
-;      undefined behavior, even on a brittle hardware state.
+;      0); retained so the editor stays out of arbitrary memory
+;      if a misconfigured BIOS-during-bring-up lets function 0
+;      fall through. NFR5: never crash into undefined behavior,
+;      even on a brittle hardware state.
 ;
-; In:      (none — entered from mode_debug_quit)
+; In:      (none — entered via tail-JP from cmd_quit /
+;          cmd_quit_force in src/exline.asm)
 ; Out:     screen cleared via ESC J + cursor home; control
 ;          transfers to CCP via BDOS function 0 (warm-boot).
 ;          Does not return on a real CP/M host; defensive RET

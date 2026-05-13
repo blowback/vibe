@@ -1,4 +1,5 @@
 # generated: 2026-05-08
+# last_updated: 2026-05-13 (story 2.1 → ready-for-dev: ex-line infrastructure + :q / :q! contexted — src/exline.asm new (exline_begin / exline_append_literal / exline_backspace / exline_cancel{,_core} / exline_dispatch / cmd_quit / cmd_quit_force / exline_command_table); src/dispatch.asm retires mode_debug_quit + enter_command_mode + unbound_command + Ctrl-Q entry (becomes AR15-clean — no more BDOS_CALL site); src/render.asm gains COMMAND-mode cursor override (RI4 + ex_buffer length read); src/statusln.asm swaps msg_mode_command for msg_not_editor_command; inc/state.inc adds ex_buffer_text EQU ex_buffer + 1 (partial-resolves Story-1.3 deferral); four new headless tests under test/cases/exline_*; epic-2 → in-progress on first-story-contexted boundary)
 # last_updated: 2026-05-11 (story 1.11 → review: render pipeline shipped — 1182 lines in src/render.asm; AR13 / AR14 / AR15 grep sweeps clean; byte-identical rebuild SHA 722569ef…0d7c0b1; 22 pass / 1 deliberate-fail across 23 headless tests including 5 new render_* cases; status_render stub retired from statusln.asm; Ctrl-L handler in dispatch.asm tail-JPs to render_full; inc/bios.inc gained BIOS_CONOUT_OVERRIDE / BIOS_TICK_ADDR_OVERRIDE IFNDEF guards; Story-1.2 VT52_GOTO clamp and Story-1.3 shadow_buffer-alignment deferrals resolved in deferred-work.md)
 # project: vibe
 # project_key: NOKEY
@@ -35,7 +36,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-05-08
-last_updated: 2026-05-13  # 1-12 → done (code review applied 13 patches: DI/EI bracket around init_cold_start stages 0-2 closing the stale-user-ISR race; ASSERT static_block_size > 1 tripwire; Makefile sizes loud-fail guard; AC16 sub-bullet 8 status_dirty wording fix; 10 doc-vs-code drift cleanups across init.asm / render.asm / input.asm / dispatch.asm. 3 items deferred to deferred-work.md: MBB_SET_USR_INT return ignored, count_accumulator unbounded post-1.12-wiring, no LD SP in init. Post-patch SHA 5e7fb772…cc6a, 1947 bytes / 63% NFR9, NFR18 byte-identical second rebuild, 23 pass / 1 deliberate fail, AR13/14/15 sweeps clean. Hardware UAT (AC14/AC15) was run on the pre-patch SHA 027bb92a…f153eec18d; the 2-byte DI/EI tightening is a defensive hardening, but dev should re-run the smoke against the post-patch binary before treating the story as fully wrapped.)
+last_updated: 2026-05-13  # 2-1 → done — code review applied 5 patches: doc comment fix on src/exline.asm:75-83 status_dirty narrative (Blind Hunter); ASSERT EX_COMMAND_BUFFER < 256 in inc/equates.inc (Blind Hunter); exline_append_literal buffer-full check tightened from RET Z to RET NC for defensive >= compare (Edge Case Hunter); ASSERT $ - exline_status_scratch >= 1 + EX_COMMAND_BUFFER + 1 in src/exline.asm (Blind Hunter + Edge Case Hunter); bare-Enter (length==0) short-circuit in exline_dispatch JPs exline_cancel for vi-faithful silent exit, promoted from decision-needed D1 by user. New headless test exline_bare-enter.asm pins the new branch. 7 items deferred to deferred-work.md (test stub refactor; exline_command_table well-formedness ASSERTs; init_teardown public-callability concern; end-to-end input-path test gap; length-source-of-truth invariant assertion; .count_key 8-bit B overflow guard; repeated-:q escalation prompt). 17 dismissed as noise / false-positive / matches-spec. Acceptance Auditor: all 14 ACs MET (AC13 hardware UAT NOT-VERIFIABLE-IN-DIFF, pending user execution; AC7 hardware coverage intentionally deferred to Story 2.8 per spec). Post-patch SHA da4a7396…12bbe4, 2243 B / 73% NFR9 (delta +7 B vs pre-patch 2236 B, accounted for by the bare-Enter short-circuit; ASSERTs are compile-time, zero runtime cost), NFR18 byte-identical second rebuild, 28 pass / 1 deliberate fail (was 27/1 pre-patch), all AR13/AR14/AR15 / AC9 / AC10 / AC14 enforcement sweeps clean. (Previous bump: 2-1 → review.) (Pre-previous: 2-1 → ready-for-dev; epic-2 → in-progress.) (Pre-pre-previous: 1-12 → done — code review applied 13 patches: DI/EI bracket around init_cold_start stages 0-2 closing the stale-user-ISR race; ASSERT static_block_size > 1 tripwire; Makefile sizes loud-fail guard; AC16 sub-bullet 8 status_dirty wording fix; 10 doc-vs-code drift cleanups across init.asm / render.asm / input.asm / dispatch.asm. 3 items deferred to deferred-work.md.)
 project: vibe
 project_key: NOKEY
 tracking_system: file-system
@@ -56,8 +57,8 @@ development_status:
   1-11-render-pipeline-with-dirty-rows-scroll-ctrl-l: done
   1-12-init-teardown-on-hardware-smoke-test: done
   epic-1-retrospective: optional
-  epic-2: backlog
-  2-1-ex-command-line-infrastructure-q-q: backlog
+  epic-2: in-progress
+  2-1-ex-command-line-infrastructure-q-q: done
   2-2-file-load-via-e-filename-incl-e: backlog
   2-3-launch-with-filename-argument: backlog
   2-4-file-save-w-w-filename-wq: backlog

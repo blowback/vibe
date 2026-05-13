@@ -18,8 +18,11 @@
 ;     msg_buffer_modified, msg_file_too_large, msg_pattern_not_found,
 ;     msg_search_wrapped, msg_undo_too_large, msg_nothing_to_undo,
 ;     msg_not_implemented, msg_no_write, msg_bdos_error,
-;     msg_mode_normal, msg_mode_insert, msg_mode_command,
-;     msg_mode_visual, msg_unbound_key (Story 1.9 — mode/unbound)
+;     msg_mode_normal, msg_mode_insert, msg_mode_visual,
+;     msg_unbound_key (Story 1.9 — mode/unbound; Story 2.1
+;     retired msg_mode_command — the ':' prompt in ex_buffer
+;     is the COMMAND-mode indicator now),
+;     msg_not_editor_command (Story 2.1 — ex-line no-match)
 ;
 ; State owned (read/write):
 ;   status_buffer        ; 80-byte row buffer; writer = this module only (AR12)
@@ -160,15 +163,18 @@ msg_undo_too_large:     DEFB "undo not possible - too large", 0
 msg_nothing_to_undo:    DEFB "nothing to undo", 0
 msg_not_implemented:    DEFB "not yet implemented", 0
 msg_no_write:           DEFB "no write since last change", 0
+msg_not_editor_command: DEFB "not an editor command", 0
 msg_bdos_error:         DEFB "bdos error", 0
 
-;; --- Story 1.9: mode-indicator + unbound-key strings (AR16) ---
+;; --- Story 1.9 / 2.1: mode-indicator + unbound-key strings (AR16) ---
 ; msg_mode_normal is the empty string: status_set_message hits the
 ; null terminator on byte 0 and pads the full STATUS_LINE_WIDTH with
 ; spaces — i.e. on entering normal mode the indicator is cleared,
-; matching vi's "no banner in normal mode" convention.
+; matching vi's "no banner in normal mode" convention. Story 2.1
+; retired msg_mode_command — the ':' prompt in ex_buffer (rendered
+; into status_buffer by exline_compose_status) is the COMMAND-mode
+; indicator.
 msg_mode_normal:        DEFB 0
 msg_mode_insert:        DEFB "-- insert --", 0
-msg_mode_command:       DEFB "-- command --", 0
 msg_mode_visual:        DEFB "-- visual --", 0
 msg_unbound_key:        DEFB "unbound key", 0
