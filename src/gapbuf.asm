@@ -13,7 +13,11 @@
 ;   gapbuf_insert    - insert byte at cursor (gap-tracks-cursor)
 ;   gapbuf_delete    - delete byte before cursor
 ;   gapbuf_move_gap  - relocate gap to a target logical offset
-;   gapbuf_load      - Story 1.7 STUB (Story 2.2 lands real impl)
+;   ; gapbuf_load stub retired by Story 2.2 — the load orchestration
+;   ; lives in src/fileio.asm; its linear-fill phase takes a
+;   ; documented AR14 carve-out (writes `gap_start` directly) and
+;   ; the post-load gapbuf_move_gap(0) returns to gapbuf's
+;   ; invariant-maintaining surface.
 ;
 ; State owned (read/write):
 ;   gap_start, gap_end, cursor_offset
@@ -28,9 +32,8 @@
 ;   inc/equates.inc  (GAP_BUFFER_MAX)
 ;   inc/state.inc    (GAP_BUFFER_BASE, gap_start, gap_end,
 ;                     cursor_offset)
-;   src/statusln.asm (status_set_message — buffer-full path,
-;                     gapbuf_load stub; msg_file_too_large,
-;                     msg_not_implemented)
+;   src/statusln.asm (status_set_message — buffer-full path;
+;                     msg_file_too_large)
 ; ============================================================
 
 ;; ============================================================
@@ -251,32 +254,6 @@ gapbuf_move_gap:
 .equal:
     POP     DE                          ; restore stack
     POP     HL
-    RET
-
-; ----------------------------------------------------------------
-; gapbuf_load
-; Load file contents into the gap buffer.
-;
-; STORY 1.7 STUB: returns CF=1 with msg_not_implemented status.
-; Real implementation lands in Story 2.2 (file load via :e
-; filename, FR2/FR6/FR11 — architecture lines 911-927). The
-; stub exists so gapbuf.asm's public list is complete from
-; Story 1.7; consumers (Story 2.2's fileio.asm) will see CF=1
-; until the stub is replaced. msg_not_implemented lives in
-; src/statusln.asm's message block per AR16.
-;
-; In:      DE = FCB pointer (Story 2.2 contract; ignored by stub)
-; Out:     CF = 1 (always — stub)
-; Trashes: A, BC, DE, HL, F
-; Calls:   status_set_message
-; ----------------------------------------------------------------
-; TODO Story 2.2: replace this stub with the real FCB-based load.
-;                 See architecture lines 911-927.
-gapbuf_load:
-    LD      HL, msg_not_implemented
-    XOR     A
-    CALL    status_set_message
-    SCF
     RET
 
 ;; ============================================================

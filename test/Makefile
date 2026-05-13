@@ -36,6 +36,12 @@ TIMEOUT_SECS      := 5
 CASES := $(wildcard cases/*.asm)
 COMS  := $(CASES:.asm=.com)
 
+# Story 2.2 fixtures — generated at test-build time so the binaries
+# don't have to be committed. big.bin is matched by the repo-root
+# *.bin .gitignore rule; eof1a.txt is regenerated each `make test`
+# and gitignored explicitly below.
+FIXTURES := fixtures/eof1a.txt fixtures/big.bin
+
 .PHONY: all test clean
 
 all: test
@@ -43,10 +49,25 @@ all: test
 cases/%.com: cases/%.asm inc/test_prologue.inc inc/test_epilogue.inc
 	$(SJASMPLUS) $(SJASMPLUS_FLAGS) --raw=$@ $<
 
+# Story 2.2: small file with text + 0x1A EOF marker + trailing
+# garbage that the load loop must discard. The 0x1A is written
+# via the octal escape \032 so POSIX printf (e.g. dash, which
+# Make invokes under Ubuntu) interprets it correctly — the \x1a
+# hex escape is a GNU printf extension that dash does not honour.
+fixtures/eof1a.txt:
+	printf 'abc\032xyz' > $@
+
+# Story 2.2: 33-KB file that exceeds GAP_BUFFER_MAX (32768). 264
+# sectors of 128 bytes = 33792 bytes; the load loop's pre-read
+# budget check fires after sector 256 and aborts with
+# msg_file_too_large.
+fixtures/big.bin:
+	dd if=/dev/zero of=$@ bs=128 count=264 2>/dev/null
+
 # Build then run: shell loop reports per-case; exits 1 on any
 # non-pass. We build all cases first (fail fast on a build break),
 # then run all cases (one bad runtime does not skip the rest).
-test: $(COMS)
+test: $(COMS) $(FIXTURES)
 	@pass=0; fail=0; \
 	for com in $(COMS); do \
 	  case=$$(basename $$com .com); \
@@ -75,4 +96,4 @@ test: $(COMS)
 	[ $$fail -eq 0 ]
 
 clean:
-	rm -f cases/*.com
+	rm -f cases/*.com $(FIXTURES)

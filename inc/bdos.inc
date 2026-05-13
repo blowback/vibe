@@ -9,7 +9,7 @@
 ; Public:
 ;   Function numbers: BDOS_EXIT, BDOS_CONOUT, BDOS_OPEN,
 ;                     BDOS_CLOSE, BDOS_DELETE, BDOS_READ_SEQ,
-;                     BDOS_WRITE_SEQ, BDOS_MAKE
+;                     BDOS_WRITE_SEQ, BDOS_MAKE, BDOS_SET_DMA
 ;   Macro:            BDOS_CALL
 ;
 ; State owned (read/write):
@@ -40,6 +40,7 @@ BDOS_DELETE     EQU 19   ; delete file: DE = FCB; A = 0..3 ok / 0xFF fail
 BDOS_READ_SEQ   EQU 20   ; read sector to DMA: DE = FCB; A = 0 ok / 1 EOF
 BDOS_WRITE_SEQ  EQU 21   ; write sector from DMA: DE = FCB; A = 0 ok / 1+ err
 BDOS_MAKE       EQU 22   ; create file: DE = FCB; A = 0..3 ok / 0xFF fail
+BDOS_SET_DMA    EQU 26   ; set DMA address: DE = DMA buffer addr; A = 0 (always)
 
 ;; --- BDOS_CALL macro (MC6 / AR15 / NFR8) ---
 ; The single, project-wide gateway to BDOS. Raw `CALL 0x0005` (or

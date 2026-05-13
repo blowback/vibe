@@ -9,7 +9,19 @@
 ;
 ; Public:
 ;   status_set_message   ; MC5 funnel: HL = msg ptr, A = optional code
-;   bdos_error_funnel    ; abort path entered from BDOS_CALL on JP M
+;   bdos_error_funnel    ; abort path entered from BDOS_CALL on JP M.
+;                        ; Story 2.2 widened the funnel: if
+;                        ; `bdos_error_pre_msg` is non-zero, the
+;                        ; funnel surfaces the pointed-to string in
+;                        ; place of msg_bdos_error. Callers (fileio_load)
+;                        ; pre-stage a context-rich message before
+;                        ; their BDOS_CALL; the funnel honours it on
+;                        ; failure and clears the override on its
+;                        ; way to input_loop. The funnel also inlines
+;                        ; the ex-line cleanup (clear ex_buffer length,
+;                        ; mode = MODE_NORMAL, status_dirty = 1) so a
+;                        ; mid-:e BDOS abort leaves the user in NORMAL
+;                        ; mode rather than stranded in COMMAND.
 ;   ; (Story 1.5's status_render stub was retired in Story 1.11 —
 ;   ; the READ/EMIT path for status_buffer / status_dirty lives in
 ;   ; src/render.asm now; this module owns the WRITE path only.)
@@ -18,6 +30,8 @@
 ;     msg_buffer_modified, msg_file_too_large, msg_pattern_not_found,
 ;     msg_search_wrapped, msg_undo_too_large, msg_nothing_to_undo,
 ;     msg_not_implemented, msg_no_write, msg_bdos_error,
+;     msg_missing_filename (Story 2.2 — :e with no arg),
+;     msg_read_error (Story 2.2 — mid-read BDOS rc >= 2),
 ;     msg_mode_normal, msg_mode_insert, msg_mode_visual,
 ;     msg_unbound_key (Story 1.9 — mode/unbound; Story 2.1
 ;     retired msg_mode_command — the ':' prompt in ex_buffer
@@ -27,6 +41,14 @@
 ; State owned (read/write):
 ;   status_buffer        ; 80-byte row buffer; writer = this module only (AR12)
 ;   status_dirty         ; nonzero = needs render; writer = this module only (AR12)
+;   bdos_error_pre_msg   ; Story 2.2 — module-local 16-bit cell;
+;                        ; non-zero = pointer to caller-supplied
+;                        ; NUL-terminated string the funnel uses in
+;                        ; place of msg_bdos_error. Writers: callers
+;                        ; (currently src/fileio.asm only); funnel
+;                        ; zeroes after use. NOT in state.inc — this
+;                        ; is an error-funnel internal handshake, not
+;                        ; cross-module shared state.
 ;
 ; Register conventions (across public entry points):
 ;   status_set_message:  In: HL = ptr, A = code
@@ -39,8 +61,11 @@
 ;                        Calls: status_set_message
 ;
 ; Dependencies:
-;   inc/equates.inc  (STATUS_LINE_WIDTH)
-;   inc/state.inc    (status_buffer, status_dirty)
+;   inc/equates.inc  (STATUS_LINE_WIDTH, EX_COMMAND_BUFFER — Story 2.2)
+;   inc/modes.inc    (MODE_NORMAL — Story 2.2 funnel ex-line cleanup)
+;   inc/state.inc    (status_buffer, status_dirty; Story 2.2 also reads
+;                     ex_buffer length + writes mode_byte in the funnel's
+;                     inline ex-line cleanup)
 ;   inc/bdos.inc     (BDOS_CALL, BDOS_EXIT — used by callers; not by this module)
 ;   inc/bios.inc     (BDOS_ENTRY via BDOS_CALL macro chain)
 ;   src/vibe.asm     (input_loop — abort target JPed to by bdos_error_funnel;
@@ -101,36 +126,70 @@ status_set_message:
 ; ----------------------------------------------------------------
 ; bdos_error_funnel
 ; Entry from BDOS_CALL macro's `JP M, bdos_error_funnel` after a
-; sign-bit BDOS rc (typically 0xFF from FCB ops). This is the
-; abort path Story 1.4 forward-referenced; Story 2.x's fileio
-; layer is the first production caller via the macro.
+; sign-bit BDOS rc (typically 0xFF from FCB ops). Story 1.5 landed
+; the bare body; Story 2.2 widened it with the `bdos_error_pre_msg`
+; override + inline ex-line cleanup (see below).
+;
+; Override mechanism (Story 2.2):
+;   Callers that want a context-rich banner on BDOS failure can
+;   pre-stage a pointer to a NUL-terminated string in the module-
+;   local `bdos_error_pre_msg` cell BEFORE invoking BDOS_CALL. On
+;   failure, the funnel reads the cell; if non-zero it surfaces the
+;   pointed-to string instead of msg_bdos_error. It then ZEROES the
+;   cell (so a subsequent unrelated BDOS error doesn't inherit a
+;   stale pointer) before JPing to input_loop. Callers that
+;   succeed are responsible for clearing the cell themselves
+;   (fileio_load does this immediately after a successful BDOS_OPEN).
+;
+; Inline ex-line cleanup (Story 2.2):
+;   The funnel JPs directly to input_loop, bypassing any in-flight
+;   exline handler's `JP exline_cancel_core` cleanup. To prevent the
+;   user being stranded in MODE_COMMAND with the failed ':e foo.fs'
+;   text dangling, the funnel inlines three writes mirroring
+;   exline_cancel_core (clear ex_buffer length, mode_byte =
+;   MODE_NORMAL, status_dirty = 1) on its way out. Layering note:
+;   we chose this over JPing to exline_cancel_core itself because
+;   statusln.asm INCLUDEs BEFORE exline.asm in vibe.asm's chain;
+;   the duplication is 9 bytes and keeps the include order acyclic.
 ;
 ; In:      A = sign-bit BDOS rc (caller-side meaning: the BDOS
 ;              function failed)
 ;          C = preserved BDOS fn-number (assumption: iz-cpm and
 ;              typical CP/M BIOSes preserve C through BDOS;
 ;              real-MicroBeast confirmation lands in Story 1.12
-;              W1). For Story 1.5 we do not actually inspect C
-;              — per-fn dispatch is deferred (see Note below).
+;              W1). The funnel does not inspect C — per-fn dispatch
+;              is unnecessary now that callers pre-stage messages
+;              via `bdos_error_pre_msg`.
 ; Out:     (does not return — control transfers to input_loop)
 ; Trashes: A, BC, DE, HL, F (matches status_set_message)
 ; Calls:   status_set_message
-;
-; Note: per-fn message dispatch is deferred to fileio.asm
-; (Story 2.x), which will set a context-rich message via
-; status_set_message BEFORE its BDOS call. When the BDOS call
-; then fails into this funnel, the prior message remains the
-; visible status — and the funnel's own write of msg_bdos_error
-; gets superseded by fileio's pre-call message at most paths.
-; The funnel writes msg_bdos_error as a safety net for unexpected
-; entries (fileio bugs, future BDOS users without context-aware
-; pre-call messages) so the user never sees a blank-but-aborted
-; editor (NFR5).
 ; ----------------------------------------------------------------
 bdos_error_funnel:
+    ;; Override check: if (bdos_error_pre_msg) != 0, use it as the
+    ;; status message; else fall back to msg_bdos_error.
+    LD      HL, (bdos_error_pre_msg)
+    LD      A, H
+    OR      L
+    JR      NZ, .emit_status
     LD      HL, msg_bdos_error
+.emit_status:                       ; common emit path (override or fallback)
     XOR     A                       ; non-error-code arg (reserved)
     CALL    status_set_message
+
+    ;; Clear the override so a future unrelated BDOS error does
+    ;; NOT pick up our stale pointer.
+    LD      HL, 0
+    LD      (bdos_error_pre_msg), HL
+
+    ;; Inline ex-line cleanup (mirrors exline_cancel_core, kept
+    ;; out-of-line to avoid statusln -> exline layering inversion).
+    XOR     A
+    LD      (ex_buffer), A          ; ex-line length = 0
+    LD      A, MODE_NORMAL
+    LD      (mode_byte), A
+    LD      A, 1
+    LD      (status_dirty), A       ; defensive (status_set_message set it; pin it)
+
     JP      input_loop              ; abort current operation:
                                     ; Story 1.5 stub warm-boots;
                                     ; Story 1.8 lands the real loop
@@ -163,8 +222,10 @@ msg_undo_too_large:     DEFB "undo not possible - too large", 0
 msg_nothing_to_undo:    DEFB "nothing to undo", 0
 msg_not_implemented:    DEFB "not yet implemented", 0
 msg_no_write:           DEFB "no write since last change", 0
+msg_missing_filename:   DEFB "missing filename", 0
 msg_not_editor_command: DEFB "not an editor command", 0
 msg_bdos_error:         DEFB "bdos error", 0
+msg_read_error:         DEFB "can't read file", 0
 
 ;; --- Story 1.9 / 2.1: mode-indicator + unbound-key strings (AR16) ---
 ; msg_mode_normal is the empty string: status_set_message hits the
@@ -178,3 +239,12 @@ msg_mode_normal:        DEFB 0
 msg_mode_insert:        DEFB "-- insert --", 0
 msg_mode_visual:        DEFB "-- visual --", 0
 msg_unbound_key:        DEFB "unbound key", 0
+
+;; --- Story 2.2: bdos_error_funnel override pointer ---
+; 16-bit pointer-or-zero. Zero = use msg_bdos_error (default); non-
+; zero = use pointed-to NUL-terminated string. See the funnel's
+; contract comment above. Module-local — NOT exported via state.inc.
+; Writers: callers (currently src/fileio.asm only); the funnel zeroes
+; on its way to input_loop so a stale value cannot leak across
+; unrelated BDOS errors.
+bdos_error_pre_msg:     DEFW 0

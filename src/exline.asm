@@ -24,11 +24,18 @@
 ;            AR14 — no gap-buffer mutation. ex_buffer is separate
 ;                   from the editing buffer; cmd_quit tail-JPs to
 ;                   init_teardown, not to gapbuf mutators.
+;                   cmd_edit / cmd_edit_force CALL fileio_load,
+;                   which owns the linear-fill AR14 carve-out
+;                   (documented in src/fileio.asm).
 ;            AR15 — no direct BDOS calls. cmd_quit / cmd_quit_force
 ;                   tail-JP to init_teardown, whose
 ;                   BDOS_CALL BDOS_EXIT (function 0 = warm-boot)
-;                   is the single macro use site reached from
-;                   this path.
+;                   is the single macro use site reached from the
+;                   quit path. cmd_edit / cmd_edit_force CALL
+;                   fileio_load, which owns the BDOS_OPEN /
+;                   BDOS_SET_DMA / BDOS_READ_SEQ / BDOS_CLOSE
+;                   cluster; this module makes no BDOS calls
+;                   directly.
 ;
 ; Public:
 ;   exline_begin               ; ':' entry from dispatch_normal
@@ -50,10 +57,22 @@
 ;   cmd_quit                   ; ':q'  — clean: warm-boot; dirty:
 ;                              ; msg_no_write + cancel-core.
 ;   cmd_quit_force             ; ':q!' — unconditional warm-boot.
+;   cmd_edit                   ; Story 2.2: ':e filename' — refuses
+;                              ; on dirty buffer (msg_no_write),
+;                              ; refuses on empty filename
+;                              ; (msg_missing_filename); otherwise
+;                              ; delegates to fileio_load.
+;   cmd_edit_force             ; Story 2.2: ':e! filename' — skips
+;                              ; the dirty check; otherwise identical
+;                              ; to cmd_edit.
 ;   exline_command_table       ; ((NUL-terminated key, 2-byte
 ;                              ; handler) list, NUL-terminated
-;                              ; by a zero-length key); extended
-;                              ; in Stories 2.2 / 2.4 / 3.1.
+;                              ; by a zero-length key). Story 2.2
+;                              ; extends from 2 entries (q, q!) to
+;                              ; 4 (e, e!, q, q!) — file-IO commands
+;                              ; grouped before the quit commands so
+;                              ; future inserts in Stories 2.4 / 3.1
+;                              ; are mechanically obvious.
 ;
 ; State owned (read/write):
 ;   ex_buffer                  ; length-prefixed (1B length + 64B
@@ -121,20 +140,33 @@
 ;                             exline_compose_status).
 ;
 ;   exline_dispatch:     In:  A = 0x0D (MC4 — ignored)
-;                        Out: matched key: tail-JP to the entry's
-;                             handler (cmd_quit / cmd_quit_force
-;                             at Story 2.1; e/e!/w/wq/etc. arrive
-;                             in 2.2 / 2.4). No match: set
-;                             msg_not_editor_command via
-;                             status_set_message, then JP
+;                        Out: Story 2.2 tokenisation: scan
+;                             ex_buffer_text for the first 0x20
+;                             (space) within the length-prefixed
+;                             payload to capture `cmd_len`. Match
+;                             cmd_len + first-cmd_len-bytes against
+;                             each table key. On match, transfer
+;                             control to the handler with
+;                             HL = ex_buffer_text + cmd_len (the
+;                             arg-region ptr) and A = ex_buffer
+;                             length - cmd_len (the arg-region
+;                             length). Handlers that don't take
+;                             args (cmd_quit / cmd_quit_force) read
+;                             A = 0 and ignore HL.
+;
+;                             No match: set msg_not_editor_command
+;                             via status_set_message, then JP
 ;                             exline_cancel_core (which clears
 ;                             ex_buffer + mode = NORMAL without
-;                             clobbering the just-set banner —
-;                             see AC5 Note in the story spec).
+;                             clobbering the just-set banner).
+;
+;                             Bare-Enter (length == 0) short-
+;                             circuits to exline_cancel — the
+;                             vi-canonical silent exit.
 ;                        Trashes: A, BC, DE, HL, F (handler may
 ;                             trash more).
 ;                        Calls: matched handler, status_set_message,
-;                             exline_cancel_core.
+;                             exline_cancel_core, exline_cancel.
 ;
 ;   exline_cancel:       In:  A = 0x1B (MC4 — ignored)
 ;                        Out: ex_buffer length = 0; mode_byte =
@@ -154,8 +186,10 @@
 ;                        Trashes: A, F.
 ;                        Calls: (none).
 ;
-;   cmd_quit:            In:  (entered via tail-JP from
-;                             exline_dispatch on ':q' match)
+;   cmd_quit:            In:  HL = ignored, A = ignored (additive
+;                             Story-2.2 contract; bypassed by
+;                             entered-via-tail-JP from
+;                             exline_dispatch on ':q' match).
 ;                        Out: buffer_dirty == 0: tail-JP to
 ;                             init_teardown (uninstalls user ISR,
 ;                             clears screen via render_init, then
@@ -170,12 +204,41 @@
 ;                        Calls: status_set_message, exline_cancel_core,
 ;                             init_teardown (tail-JP — see init.asm).
 ;
-;   cmd_quit_force:      In:  (entered via tail-JP from
-;                             exline_dispatch on ':q!' match)
+;   cmd_quit_force:      In:  HL = ignored, A = ignored (additive
+;                             Story-2.2 contract).
 ;                        Out: tail-JP to init_teardown
 ;                             unconditionally (FR8 / BH5).
 ;                        Trashes: A, BC, DE, HL, F.
 ;                        Calls: init_teardown (tail-JP).
+;
+;   cmd_edit:            In:  HL = arg ptr (just past ':e' token),
+;                             A  = arg length.
+;                        Out: empty / all-space arg:
+;                             msg_missing_filename + JP
+;                             exline_cancel_core. Dirty buffer:
+;                             msg_no_write + JP exline_cancel_core.
+;                             Otherwise: CALL fileio_load with the
+;                             stripped filename, then JP
+;                             exline_cancel_core (fileio_load
+;                             leaves its own status banner that
+;                             cancel_core does NOT clobber).
+;                        Trashes: A, BC, DE, HL, F.
+;                        Calls: fileio_strip_leading_spaces,
+;                             status_set_message, fileio_load,
+;                             exline_cancel_core.
+;
+;   cmd_edit_force:      In:  HL = arg ptr (just past ':e!' token),
+;                             A  = arg length.
+;                        Out: empty / all-space arg:
+;                             msg_missing_filename + JP
+;                             exline_cancel_core. Otherwise:
+;                             unconditional CALL fileio_load (no
+;                             dirty check — BH6 explicit consent),
+;                             then JP exline_cancel_core.
+;                        Trashes: A, BC, DE, HL, F.
+;                        Calls: fileio_strip_leading_spaces,
+;                             status_set_message, fileio_load,
+;                             exline_cancel_core.
 ;
 ; Dependencies:
 ;   inc/equates.inc  (EX_COMMAND_BUFFER)
@@ -183,11 +246,15 @@
 ;   inc/state.inc    (ex_buffer, ex_buffer_text, mode_byte,
 ;                     status_dirty, buffer_dirty)
 ;   src/statusln.asm (status_set_message; msg_no_write,
-;                     msg_mode_normal, msg_not_editor_command)
+;                     msg_mode_normal, msg_not_editor_command,
+;                     msg_missing_filename — Story 2.2)
 ;   src/init.asm     (init_teardown — cmd_quit / cmd_quit_force's
 ;                     tail-JP target; uninstalls the user ISR,
 ;                     clears the screen via render_init, and
 ;                     warm-boots to CCP via BDOS function 0)
+;   src/fileio.asm   (fileio_load, fileio_strip_leading_spaces —
+;                     Story 2.2; cmd_edit / cmd_edit_force
+;                     forward-reference via sjasmplus two-pass).
 ; ============================================================
 
 ;; ============================================================
@@ -291,13 +358,17 @@ exline_backspace:
 
 ; ----------------------------------------------------------------
 ; exline_dispatch
-; Walk exline_command_table comparing ex_buffer's length-prefixed
-; payload against each NUL-terminated key string. On match, tail-
-; JP to the entry's 2-byte handler. On no match (terminator
-; reached), set msg_not_editor_command via status_set_message
-; and tail-JP to exline_cancel_core — the core variant that does
-; NOT clobber status_buffer with msg_mode_normal, so the error
-; banner the user just earned survives the cleanup.
+; Story 2.2 tokenisation: split ex_buffer's length-prefixed
+; payload at the first 0x20 (space). The bytes BEFORE the first
+; space are the "command token" (length cached in
+; `exline_cmd_len`); the bytes AT-OR-AFTER are the "arg region".
+; Compare cmd_len + first cmd_len bytes against each table key;
+; on match, control transfers to the handler with
+;   HL = ex_buffer_text + cmd_len  (arg-region ptr)
+;   A  = ex_buffer length - cmd_len (arg-region length)
+; Handlers that take args (cmd_edit / cmd_edit_force) read HL+A;
+; handlers that don't (cmd_quit / cmd_quit_force) ignore them and
+; see A = 0 (no space in the input).
 ;
 ; In:      A = 0x0D (MC4 — ignored; state comes from ex_buffer).
 ; Out:     match: control transferred to handler (no return here).
@@ -306,8 +377,9 @@ exline_backspace:
 ;                    status_dirty set. Returns to dispatch_key's
 ;                    caller via exline_cancel_core's RET.
 ; Trashes: A, BC, DE, HL, F (handlers may trash more).
-; Calls:   matched handler (cmd_quit / cmd_quit_force / ...),
-;          status_set_message, exline_cancel_core (tail-JP).
+; Calls:   matched handler (cmd_quit / cmd_quit_force / cmd_edit /
+;          cmd_edit_force), status_set_message, exline_cancel_core,
+;          exline_cancel.
 ; ----------------------------------------------------------------
 exline_dispatch:
     ;; Bare-Enter (length 0) exits silently per vi convention — skip
@@ -317,6 +389,28 @@ exline_dispatch:
     OR      A
     JP      Z, exline_cancel            ; empty ex-line -> silent cancel
 
+    ;; --- Tokenise: find first space in ex_buffer_text -----------
+    ;; A = ex_buffer length (preserved); B = remaining-to-scan;
+    ;; C will accumulate cmd_len. HL walks the payload.
+    LD      B, A                        ; B = length
+    LD      C, 0                        ; C = cmd_len
+    LD      HL, ex_buffer_text
+.tok_scan:
+    LD      A, B
+    OR      A
+    JR      Z, .tok_done                ; ran out -> no space found
+    LD      A, (HL)
+    CP      ' '
+    JR      Z, .tok_done
+    INC     HL
+    INC     C
+    DEC     B
+    JR      .tok_scan
+.tok_done:
+    LD      A, C
+    LD      (exline_cmd_len), A
+
+    ;; --- Walk the table -----------------------------------------
     LD      HL, exline_command_table
 .next_entry:
     LD      A, (HL)
@@ -335,12 +429,12 @@ exline_dispatch:
     JR      .count_key
 .key_counted:
     ;; B = key length; HL now points at the entry's null.
-    LD      A, (ex_buffer)
+    LD      A, (exline_cmd_len)
     CP      B
     POP     HL                          ; HL = entry key start
     JR      NZ, .skip_entry             ; length mismatch -> next entry
 
-    ;; Lengths match: byte-compare.
+    ;; Lengths match: byte-compare cmd_len bytes.
     LD      DE, ex_buffer_text
     LD      C, B                        ; C = bytes remaining
 .compare:
@@ -372,13 +466,21 @@ exline_dispatch:
 .match:
     ;; HL points at the null after the key (compare loop walked
     ;; key_length bytes from key_start). Step past null to the
-    ;; 2-byte handler addr, load it into HL, then JP (HL).
+    ;; 2-byte handler addr; load it into DE; compute arg ptr/len in
+    ;; HL/A; PUSH DE / RET to jump through DE without touching HL.
     INC     HL
     LD      E, (HL)
     INC     HL
-    LD      D, (HL)
-    EX      DE, HL                      ; HL = handler addr
-    JP      (HL)                        ; tail-JP
+    LD      D, (HL)                     ; DE = handler addr
+    LD      A, (exline_cmd_len)
+    LD      C, A
+    LD      B, 0
+    LD      HL, ex_buffer_text
+    ADD     HL, BC                      ; HL = arg-region ptr
+    LD      A, (ex_buffer)
+    SUB     C                           ; A = arg-region length
+    PUSH    DE
+    RET                                 ; pseudo-JP DE (HL/A preserved)
 
 .no_match:
     LD      HL, msg_not_editor_command
@@ -493,6 +595,91 @@ cmd_quit_force:
 
 
 ;; ============================================================
+;; --- Public entry: cmd_edit (':e filename' handler) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; cmd_edit
+; ':e filename' — read filename into the gap buffer. Refuses on a
+; dirty buffer (BH6) and on an empty filename arg. Otherwise hands
+; the stripped filename to fileio_load and JPs to
+; exline_cancel_core, preserving fileio_load's status banner
+; ("FILENAME N bytes" on success; "file too large" / "can't read
+; file" on a documented failure path). The open-fail path is
+; handled by the BDOS funnel and never returns here.
+;
+; Entered via the PUSH-DE-RET pseudo-JP from exline_dispatch on
+; the 'e' match.
+;
+; In:      HL = arg-region ptr (within ex_buffer_text + cmd_len);
+;          A  = arg-region length (0..63).
+; Out:     missing filename: msg_missing_filename + JP
+;          exline_cancel_core. Dirty: msg_no_write + JP
+;          exline_cancel_core. Otherwise: fileio_load + JP
+;          exline_cancel_core (open-fail short-circuits to
+;          input_loop via the BDOS funnel; never returns here).
+; Trashes: A, BC, DE, HL, F.
+; Calls:   fileio_strip_leading_spaces, status_set_message,
+;          fileio_load, exline_cancel_core.
+; ----------------------------------------------------------------
+cmd_edit:
+    CALL    fileio_strip_leading_spaces
+    OR      A
+    JR      Z, .missing                 ; empty / all-space arg
+    LD      B, A                        ; save stripped length across dirty read
+    LD      A, (buffer_dirty)
+    OR      A
+    JR      NZ, .dirty
+    LD      A, B                        ; restore length
+    CALL    fileio_load
+    JP      exline_cancel_core
+.dirty:
+    LD      HL, msg_no_write
+    JR      .emit_cancel
+.missing:
+    LD      HL, msg_missing_filename
+.emit_cancel:
+    XOR     A
+    CALL    status_set_message
+    JP      exline_cancel_core
+
+
+;; ============================================================
+;; --- Public entry: cmd_edit_force (':e! filename' handler) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; cmd_edit_force
+; ':e! filename' — like cmd_edit but skips the dirty check. The
+; '!' is the user's explicit consent to abandon any unsaved
+; changes (BH6). Empty arg still refuses with msg_missing_filename
+; — '!' doesn't make a missing filename appear.
+;
+; Entered via the PUSH-DE-RET pseudo-JP from exline_dispatch on
+; the 'e!' match.
+;
+; In:      HL = arg-region ptr; A = arg-region length.
+; Out:     missing filename: msg_missing_filename + JP
+;          exline_cancel_core. Otherwise: fileio_load + JP
+;          exline_cancel_core.
+; Trashes: A, BC, DE, HL, F.
+; Calls:   fileio_strip_leading_spaces, status_set_message,
+;          fileio_load, exline_cancel_core.
+; ----------------------------------------------------------------
+cmd_edit_force:
+    CALL    fileio_strip_leading_spaces
+    OR      A
+    JR      Z, .missing
+    CALL    fileio_load
+    JP      exline_cancel_core
+.missing:
+    LD      HL, msg_missing_filename
+    XOR     A
+    CALL    status_set_message
+    JP      exline_cancel_core
+
+
+;; ============================================================
 ;; --- Internal helper: exline_compose_status ---
 ;; ============================================================
 
@@ -540,11 +727,29 @@ exline_compose_status:
 ; extend by inserting entries before the terminator.
 
 exline_command_table:
-    DEFB    "q", 0                      ; entry 0: ':q'  (length 1)
+    DEFB    "e", 0                      ; entry 0: ':e'  (length 1)
+    DEFW    cmd_edit
+    DEFB    "e!", 0                     ; entry 1: ':e!' (length 2)
+    DEFW    cmd_edit_force
+    DEFB    "q", 0                      ; entry 2: ':q'  (length 1)
     DEFW    cmd_quit
-    DEFB    "q!", 0                     ; entry 1: ':q!' (length 2)
+    DEFB    "q!", 0                     ; entry 3: ':q!' (length 2)
     DEFW    cmd_quit_force
     DEFB    0                           ; terminator (zero-length key)
+
+
+;; ============================================================
+;; --- Data: exline_cmd_len ---
+;; ============================================================
+; Module-local 1-byte cache of the command-token length (bytes
+; before the first space in ex_buffer_text), populated at the
+; top of exline_dispatch and read by the table-walk's length
+; compare + the post-match arg-region pointer / length math.
+; A cell rather than a register because the table walk uses B
+; (key length counter) and HL (table position) in the same pass.
+
+exline_cmd_len:
+    DEFB    0
 
 
 ;; ============================================================

@@ -41,7 +41,7 @@
 ;   src/input.asm (Story 1.8); src/statusln.asm (Story 1.5);
 ;   src/gapbuf.asm (Story 1.7); src/render.asm (Story 1.11);
 ;   src/dispatch.asm (Story 1.9); src/parser.asm (Story 1.10);
-;   src/exline.asm (Story 2.1)
+;   src/exline.asm (Story 2.1); src/fileio.asm (Story 2.2)
 ; ============================================================
 
 ;; --- Compile-time-constant includes (dependency order per AR25) ---
@@ -132,6 +132,16 @@
 ; exline_dispatch / exline_cancel; sjasmplus's two-pass
 ; assembly resolves them here.
     INCLUDE "exline.asm"
+
+;; --- File I/O (FR6, FR9, FR10, FR11, FR51; fileio.asm — Story 2.2) ---
+; AR25 order: exline -> fileio -> undo. fileio.asm lands the
+; BDOS file-I/O cluster (OPEN / SET_DMA / READ_SEQ / CLOSE) and
+; the FCB-based load orchestration that cmd_edit / cmd_edit_force
+; in src/exline.asm forward-reference (sjasmplus two-pass).
+; Story 2.4 (`:w` / `:wq`) will extend this module with the save
+; side; Story 2.3 (launch-with-filename) will call into fileio_load
+; from init.
+    INCLUDE "fileio.asm"
 
 ;; --- Main input loop (Story 1.12 / 2.1) ---
 ; Main input loop. Falls into here from `init_cold_start`
