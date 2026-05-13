@@ -77,17 +77,21 @@
 ;
 ; Register conventions (across public entry points):
 ;   render_init:            In:  (none)
-;                           Out: screen cleared via one ESC J;
-;                                shadow seeded to 0x20; dirty_rows
-;                                zeroed; top_line_offset zeroed;
-;                                cursor at row 0/col 0 emitted
-;                                (one ESC Y). status_dirty NOT
-;                                cleared (a pre-init
-;                                status_set_message remains
-;                                visible on the first render_diff).
+;                           Out: screen cleared via ESC H + ESC J
+;                                (full clear with cursor home —
+;                                see Story-1.12 hardware-UAT
+;                                patch); shadow seeded to 0x20;
+;                                dirty_rows zeroed;
+;                                top_line_offset zeroed; cursor
+;                                left at row 0/col 0 by the ESC H
+;                                (no trailing ESC Y needed).
+;                                status_dirty NOT cleared (a
+;                                pre-init status_set_message
+;                                remains visible on the first
+;                                render_diff).
 ;                           Trashes: A, BC, DE, HL, F.
-;                           Calls:   render_emit_byte,
-;                                    render_emit_goto.
+;                           Calls:   render_emit_byte (4 times —
+;                                    ESC, H, ESC, J).
 ;
 ;   render_diff:            In:  (none — parameters are state.inc
 ;                                fields).
@@ -137,8 +141,8 @@
 ;                     status_buffer, status_dirty, GAP_BUFFER_BASE)
 ;   inc/bios.inc     (BIOS_CONOUT — the one BIOS entry point this
 ;                     module touches)
-;   inc/vt52.inc     (VT52_ESC, VT52_CLEAR_SCREEN, VT52_GOTO,
-;                     VT52_COORD_BIAS)
+;   inc/vt52.inc     (VT52_ESC, VT52_CURSOR_HOME, VT52_ERASE_TO_EOS,
+;                     VT52_GOTO, VT52_COORD_BIAS)
 ;   src/statusln.asm (state collaborator only — render reads
 ;                     status_buffer / status_dirty by state.inc
 ;                     symbol; no function-call dependency)
@@ -170,17 +174,33 @@
 ; status_dirty WRITE path.
 ;
 ; In:      (none)
-; Out:     screen cleared (one ESC J); shadow_buffer filled with
-;          0x20; dirty_rows = 0; top_line_offset = 0; cursor
-;          positioned at row 0 / col 0. status_dirty unchanged.
+; Out:     screen cleared via ESC H + ESC J (full clear, cursor
+;          left at row 0 / col 0 by ESC H — see "On VT52 ESC J
+;          alone..." note below); shadow_buffer filled with
+;          0x20; dirty_rows = 0; top_line_offset = 0.
+;          status_dirty unchanged.
 ; Trashes: A, BC, DE, HL, F.
-; Calls:   render_emit_byte, render_emit_goto.
+; Calls:   render_emit_byte (4 times).
 ; ----------------------------------------------------------------
 render_init:
-    ;; ESC J — VT52 clear screen (two-byte sequence).
+    ;; Cursor home + erase-to-end-of-screen = full clear.
+    ;;
+    ;; On VT52 ESC J alone is "erase from cursor to end of
+    ;; screen", NOT a whole-screen clear (Story-1.12 hardware
+    ;; UAT surfaced this: emitting bare ESC J at .com entry
+    ;; leaves every row above the CCP-positioned cursor
+    ;; untouched). The whole-screen clear requires ESC H
+    ;; (home cursor) followed by ESC J (erase from home onward).
+    ;; After this 4-byte sequence the screen is blank AND the
+    ;; cursor is at row 0, col 0 — so no trailing ESC Y home
+    ;; is needed.
     LD      A, VT52_ESC
     CALL    render_emit_byte
-    LD      A, VT52_CLEAR_SCREEN
+    LD      A, VT52_CURSOR_HOME
+    CALL    render_emit_byte
+    LD      A, VT52_ESC
+    CALL    render_emit_byte
+    LD      A, VT52_ERASE_TO_EOS
     CALL    render_emit_byte
 
     ;; Fill shadow_buffer with 0x20 (ASCII space). LDIR-fill idiom:
@@ -204,11 +224,8 @@ render_init:
     LD      HL, 0
     LD      (top_line_offset), HL
 
-    ;; Home cursor: emit ESC Y (0+bias) (0+bias).
-    XOR     A
-    LD      C, A                ; C = col 0
-                                ; A already 0 = row 0
-    JP      render_emit_goto    ; tail-JP — emit_goto's RET returns to caller
+    ;; Cursor is already at row 0 / col 0 from the ESC H above.
+    RET
 
 
 ;; ============================================================
@@ -1155,13 +1172,19 @@ render_emit_byte:
 ; In:      A = row (raw, may exceed SCREEN_ROWS — clamped),
 ;          C = col (raw, may exceed SCREEN_COLS — clamped)
 ; Out:     4 bytes emitted (ESC, 'Y', row+bias, col+bias).
-; Trashes: A, BC, DE, F.
+; Trashes: A, BC, F (D/E preserved by writing biased row/col
+;          through module-local scratch — see Notes).
 ; Calls:   render_emit_byte (4 times).
-; Notes:   The biased row/col are held in D/E across the
-;          four emit_byte calls because emit_byte's internal
-;          `LD C, A` overwrites C on every call. Using D/E
-;          (which emit_byte does not touch) keeps the cursor
-;          coordinates intact through the sequence.
+; Notes:   An earlier version held biased row/col in D/E across
+;          the four emit_byte calls. Story-1.12 hardware UAT
+;          surfaced symptoms consistent with the MicroBeast
+;          BIOS_CONOUT trashing D and/or E — ESC Y sequences
+;          arrived at the terminal with garbage row/col bytes,
+;          scattering each render run to random screen
+;          positions. Resolution (the Story-1.11 deferral
+;          promoted to a patch here): hold biased row/col in
+;          two file-local scratch cells across the calls. The
+;          BIOS may now trash any register at will.
 ; ----------------------------------------------------------------
 render_emit_goto:
     ;; Clamp row.
@@ -1170,7 +1193,7 @@ render_emit_goto:
     LD      A, SCREEN_ROWS - 1
 .row_ok:
     ADD     A, VT52_COORD_BIAS
-    LD      D, A                        ; D = biased row
+    LD      (render_goto_row), A
     ;; Clamp col (was in C on entry).
     LD      A, C
     CP      SCREEN_COLS
@@ -1178,15 +1201,15 @@ render_emit_goto:
     LD      A, SCREEN_COLS - 1
 .col_ok:
     ADD     A, VT52_COORD_BIAS
-    LD      E, A                        ; E = biased col
-    ;; Emit ESC, 'Y', biased row (D), biased col (E).
+    LD      (render_goto_col), A
+    ;; Emit ESC, 'Y', biased row, biased col.
     LD      A, VT52_ESC
     CALL    render_emit_byte
     LD      A, VT52_GOTO
     CALL    render_emit_byte
-    LD      A, D
+    LD      A, (render_goto_row)
     CALL    render_emit_byte
-    LD      A, E
+    LD      A, (render_goto_col)
     JP      render_emit_byte            ; tail-JP
 
 
@@ -1223,3 +1246,6 @@ render_col:                   DEFB 0    ; current col index in cell loop
 render_past_eol:              DEFB 0    ; nonzero once row content exhausted
 render_in_run:                DEFB 0    ; nonzero while inside a contiguous diff run
 render_scroll_did_advance:    DEFB 0    ; nonzero if scroll_adjust advanced top this frame
+render_goto_row:              DEFB 0    ; biased row held across the 4 emit_byte calls in render_emit_goto
+                                        ;   (defensive against BIOS_CONOUT D/E clobber — Story 1.12)
+render_goto_col:              DEFB 0    ; biased col, same pattern

@@ -16,16 +16,23 @@
 ;          validate the 50 Hz tick window).
 ;
 ; Public:
-;   input_get_key  - read next keystroke (RI5: Esc disambig +
-;                    arrow synthesis + 1-byte putback queue)
+;   input_get_key   - read next keystroke (RI5: Esc disambig +
+;                     arrow synthesis + 1-byte putback queue)
+;   input_tick_isr  - 60 Hz user-ISR body installed by init.asm
+;                     via MBB_SET_USR_INT; increments
+;                     input_tick_counter (resolves Story 1.4 W1)
 ;
 ; State owned (read/write):
-;   input_held_byte  - 1-byte putback slot (Esc + unrecognized
-;                       follow-up: stash the follow-up here so
-;                       the next call returns it directly,
-;                       avoiding a dropped key for the common
-;                       insert-Esc-then-motion vi pattern)
-;   input_held_flag  - nonzero iff input_held_byte is valid
+;   input_held_byte    - 1-byte putback slot (Esc + unrecognized
+;                         follow-up: stash the follow-up here so
+;                         the next call returns it directly,
+;                         avoiding a dropped key for the common
+;                         insert-Esc-then-motion vi pattern)
+;   input_held_flag    - nonzero iff input_held_byte is valid
+;   input_tick_counter - 16-bit counter; ISR writer
+;                         (input_tick_isr) and tick_wait_one
+;                         reader. Cleared by init's LDIR;
+;                         ISR install / uninstall lives in init.
 ;
 ; Register conventions (across public entry points):
 ;   A  = output keycode (ASCII or KEY_ARROW_*); also working
@@ -41,11 +48,14 @@
 ;
 ; Dependencies:
 ;   inc/equates.inc  (ESC_TIMEOUT_TICKS)
-;   inc/bios.inc     (BIOS_CONIN, BIOS_CONINST, BIOS_TICK_ADDR)
+;   inc/bios.inc     (BIOS_CONIN, BIOS_CONINST — MBB_SET_USR_INT
+;                     is consumed by src/init.asm, not here)
 ;   inc/vt52.inc     (VT52_ESC = 0x1B — first-byte compare)
 ;   inc/modes.inc    (KEY_ARROW_UP / DOWN / LEFT / RIGHT)
-;   inc/state.inc    (input_held_byte, input_held_flag —
-;                     this story added both fields)
+;   inc/state.inc    (input_held_byte, input_held_flag,
+;                     input_tick_counter — the third field
+;                     added by Story 1.12 to back the user-ISR
+;                     tick increments)
 ; ============================================================
 
 ;; ============================================================
@@ -110,6 +120,39 @@ input_get_key:
     LD      A, 1
     LD      (input_held_flag), A    ; mark queue valid
     LD      A, VT52_ESC             ; report bare Esc this call
+    RET
+
+; ----------------------------------------------------------------
+; input_tick_isr
+; 60 Hz user-interrupt body installed by src/init.asm's cold-start
+; via MBB_SET_USR_INT. The BIOS swaps the shadow register set in
+; via EXX before invocation and preserves AF across the call; the
+; ISR is free to use HL / BC / DE (the shadow set) without saving,
+; but MUST NOT EXX or EX AF,AF' (that would corrupt the BIOS's
+; saved state) and MUST RETurn normally.
+;
+; Resolves the Story 1.4 W1 deferral: the MicroBeast BIOS does not
+; expose a free-running tick counter at any fixed address; VIBE
+; maintains its own via this ISR + the state.inc-resident
+; input_tick_counter. tick_wait_one reads the counter directly.
+;
+; Wrap: input_tick_counter is 16-bit and wraps 0xFFFF -> 0x0000
+; roughly every 18 minutes at 60 Hz. tick_wait_one's unsigned
+; SBC-delta compare is wrap-safe (Story 1.8 reader contract).
+;
+; In:      (none — fires on BIOS interrupt timer, ~60 Hz)
+; Out:     input_tick_counter += 1 (mod 0x10000)
+; Trashes: (none observable to the foreground) — body uses only
+;          `LD HL,(nn) / INC HL / LD (nn),HL / RET`, none of
+;          which affect F. The shadow-set HL IS written but the
+;          BIOS swaps the shadow set back via EXX on return, so
+;          main HL is intact.
+; Calls:   (none)
+; ----------------------------------------------------------------
+input_tick_isr:
+    LD      HL, (input_tick_counter)
+    INC     HL
+    LD      (input_tick_counter), HL
     RET
 
 ;; ============================================================
@@ -178,11 +221,11 @@ synthesize_arrow_key:
 ; ----------------------------------------------------------------
 tick_wait_one:
     DI
-    LD      DE, (BIOS_TICK_ADDR)    ; snapshot tick at entry
+    LD      DE, (input_tick_counter)  ; snapshot tick at entry
     EI
 .spin:
     DI
-    LD      HL, (BIOS_TICK_ADDR)    ; current tick
+    LD      HL, (input_tick_counter)  ; current tick
     EI
     OR      A                       ; clear CF (SBC reads it)
     SBC     HL, DE                  ; HL = current - snapshot (wrap-safe)

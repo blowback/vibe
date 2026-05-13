@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-05-08
-last_updated: 2026-05-11  # 1-11 → done (code review applied 9 patches; build SHA 72dadeb0...; 22 pass / 1 deliberate-fail)
+last_updated: 2026-05-13  # 1-12 → done (code review applied 13 patches: DI/EI bracket around init_cold_start stages 0-2 closing the stale-user-ISR race; ASSERT static_block_size > 1 tripwire; Makefile sizes loud-fail guard; AC16 sub-bullet 8 status_dirty wording fix; 10 doc-vs-code drift cleanups across init.asm / render.asm / input.asm / dispatch.asm. 3 items deferred to deferred-work.md: MBB_SET_USR_INT return ignored, count_accumulator unbounded post-1.12-wiring, no LD SP in init. Post-patch SHA 5e7fb772…cc6a, 1947 bytes / 63% NFR9, NFR18 byte-identical second rebuild, 23 pass / 1 deliberate fail, AR13/14/15 sweeps clean. Hardware UAT (AC14/AC15) was run on the pre-patch SHA 027bb92a…f153eec18d; the 2-byte DI/EI tightening is a defensive hardening, but dev should re-run the smoke against the post-patch binary before treating the story as fully wrapped.)
 project: vibe
 project_key: NOKEY
 tracking_system: file-system
@@ -54,7 +54,7 @@ development_status:
   1-9-mode-dispatch-with-sparse-table-binary-search: done
   1-10-command-parser-count-pending-operator-motion-prefix: done
   1-11-render-pipeline-with-dirty-rows-scroll-ctrl-l: done
-  1-12-init-teardown-on-hardware-smoke-test: backlog
+  1-12-init-teardown-on-hardware-smoke-test: done
   epic-1-retrospective: optional
   epic-2: backlog
   2-1-ex-command-line-infrastructure-q-q: backlog

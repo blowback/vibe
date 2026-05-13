@@ -42,7 +42,7 @@
 ;   enter_visual_mode
 ;   mode_full_refresh_stub        ; Ctrl-L  — Story 1.11 lands real
 ;   mode_search_prompt_stub       ; /       — Story 3.1 lands real
-;   mode_debug_quit               ; Ctrl-Q  — temporary BDOS_EXIT
+;   mode_debug_quit               ; Ctrl-Q  — tail-JP to init_teardown
 ;   DISPATCH_NORMAL_COUNT         ; per-table entry-count equates
 ;   DISPATCH_INSERT_COUNT
 ;   DISPATCH_COMMAND_COUNT
@@ -76,11 +76,11 @@
 ;                           dispatch_key's caller.
 ;                      Trashes: A, BC, DE, HL, F (status_set_message).
 ;                      Calls: status_set_message (most), or
-;                             BDOS_CALL BDOS_EXIT (mode_debug_quit).
+;                             init_teardown via tail-JP
+;                             (mode_debug_quit — see src/init.asm).
 ;
 ; Dependencies:
 ;   inc/modes.inc    (MODE_NORMAL/INSERT/COMMAND/VISUAL, VIS_CHAR)
-;   inc/bdos.inc     (BDOS_CALL macro, BDOS_EXIT — for debug-quit)
 ;   inc/state.inc    (mode_byte, visual_submode)
 ;   src/statusln.asm (status_set_message + msg_mode_*,
 ;                     msg_unbound_key, msg_not_implemented)
@@ -93,6 +93,8 @@
 ;   src/render.asm   (Story 1.11 — render_full, the real Ctrl-L
 ;                     full-redraw target; replaces the Story 1.5
 ;                     stub body of mode_full_refresh_stub)
+;   src/init.asm     (Story 1.12 — init_teardown, for
+;                     mode_debug_quit's screen-clear-on-exit path)
 ; ============================================================
 
 ;; ============================================================
@@ -322,25 +324,24 @@ mode_search_prompt_stub:
 
 ; ----------------------------------------------------------------
 ; mode_debug_quit
-; Bound to Ctrl-Q (0x11) in dispatch_normal — TEMPORARY exit
-; handler for the Story 1.12 hardware bring-up. Removed when
-; the editor exits via :q / :q! land in Story 2.1. Routes
-; through the BDOS_CALL macro (AR15 — the one production
-; BDOS gateway) and warm-boots back to CCP.
-;
-; The trailing RET is defensive: BDOS function 0 never returns
-; on a real CP/M host, but a misconfigured BIOS during bring-up
-; could in principle let it through — the RET keeps us out of
-; arbitrary memory in that case (NFR5).
+; TEMPORARY exit handler — bound to Ctrl-Q (0x11) for the
+; Story 1.12 hardware bring-up. Tail-JPs to `init_teardown`
+; (src/init.asm), which clears the screen + warm-boots to CCP.
+; Removed in Story 2.1 when `:q` / `:q!` arrive as the proper
+; vi exit mechanism.
 ;
 ; In:      A = 0x11 (MC4)
-; Out:     does not return on a real CP/M host (warm-boot)
-; Trashes: A, BC, DE, HL, F (BDOS_CALL convention)
-; Calls:   BDOS_ENTRY (via BDOS_CALL macro)
+; Out:     does not return on a real CP/M host (init_teardown
+;          warm-boots via BDOS function 0; defensive RET in
+;          init_teardown returns here only on a misconfigured
+;          BIOS — then RETs to dispatch_key's caller back into
+;          the input loop, preserving NFR5).
+; Trashes: A, BC, DE, HL, F (init_teardown's chain)
+; Calls:   init_teardown (tail-JP — handles screen-clear +
+;          warm-boot; see src/init.asm)
 ; ----------------------------------------------------------------
 mode_debug_quit:
-    BDOS_CALL BDOS_EXIT
-    RET                         ; defensive — BDOS_EXIT never returns
+    JP      init_teardown
 
 
 ;; ============================================================

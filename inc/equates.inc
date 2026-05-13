@@ -47,9 +47,14 @@ STATUS_LINE_WIDTH     EQU SCREEN_COLS     ; Status row spans the full screen wid
 DIRTY_ROWS_BITMAP_BYTES EQU (SCREEN_ROWS + 7) / 8  ; ceil(rows/8); auto-resizes if SCREEN_ROWS grows
 
 ;; --- Input timing ---
-ESC_TIMEOUT_TICKS     EQU 2       ; 50 Hz tick window for Esc/arrow disambiguation (RI5/NFR4)
+ESC_TIMEOUT_TICKS     EQU 2       ; 60 Hz tick window for Esc/arrow disambiguation (RI5/NFR4)
+                                  ; Rate confirmed against MicroBeast BIOS 1.6+ in
+                                  ; Story 1.12 (W1) — the BIOS's user-ISR hook fires
+                                  ; every 1/60 s, not the 50 Hz the architecture
+                                  ; originally assumed. 2 ticks ≈ 33 ms; NFR4 target
+                                  ; 20-40 ms still holds.
                                   ; Must be > 0: LD B, 0 + DJNZ wraps to 256
-                                  ; iterations (~5 s), inverting the intent of
+                                  ; iterations (~4.3 s), inverting the intent of
                                   ; "skip the window" — guard at build time.
     ASSERT ESC_TIMEOUT_TICKS > 0
 

@@ -13,7 +13,8 @@
 ;                   input_held_flag
 ;   16-bit state:   cursor_offset, gap_start, gap_end,
 ;                   visual_anchor, count_accumulator,
-;                   yank_length, top_line_offset
+;                   yank_length, top_line_offset,
+;                   input_tick_counter
 ;   Buffers:        status_buffer, search_pattern, ex_buffer,
 ;                   filename_buffer, shadow_buffer, dirty_rows,
 ;                   undo_buffer
@@ -75,6 +76,17 @@ static_off            =   static_off + 2
 yank_length           EQU static_data_base + static_off
 static_off            =   static_off + 2
 top_line_offset       EQU static_data_base + static_off
+static_off            =   static_off + 2
+; input_tick_counter — 16-bit counter incremented by the user ISR
+; installed in src/init.asm at cold-start (resolves the Story 1.4 W1
+; tick-counter deferral via MBB_SET_USR_INT; see inc/bios.inc).
+; Writer: src/input.asm's input_tick_isr (every 1/60 s).
+; Reader: src/input.asm's tick_wait_one (Esc / arrow disambig).
+; Cleared to zero by init.asm's cold-start LDIR fill; uninstalled by
+; init_teardown before warm-boot. Wraps 0xFFFF -> 0x0000 every
+; ~18 min at 60 Hz — tick_wait_one uses unsigned SBC HL,DE delta so
+; the wrap is transparent.
+input_tick_counter    EQU static_data_base + static_off
 static_off            =   static_off + 2
 
 ;; --- Buffers ---

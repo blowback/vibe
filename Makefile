@@ -8,8 +8,9 @@
 #   test              — recurse into test/ (stub until Story 1.6).
 #   push              — upload vibe.com to MicroBeast via SLIDE
 #                       (stub until first real push, per BA4).
-#   sizes             — listing-file size audit (stub until later
-#                       story wires it, per BA3).
+#   sizes             — per-section size from the listing —
+#                       implements NFR9 audit baseline; see
+#                       Story 1.12.
 #
 # sjasmplus invocation is pinned by BA2 — do NOT add --date,
 # --export, host-path-embedding flags, etc. NFR18 (byte-identical
@@ -58,5 +59,13 @@ push:
 	@echo "make push: SLIDE invocation deferred until first real push (BA4)."
 	@echo "          Story 1.1 ships the target as a stub."
 
-sizes:
-	@echo "make sizes: listing-file size audit deferred to a later story (BA3)."
+sizes: build/vibe.lst
+	@awk '$$3 == "static_data_base" && $$4 == "EQU" { \
+	        size = strtonum("0x" $$2) - 256; \
+	        printf "code_section: %d bytes (~%d%% of NFR9 ~3 KB budget)\n", \
+	               size, size * 100 / 3072; \
+	        found = 1; \
+	        exit } \
+	    END { if (!found) { \
+	            print "make sizes: ERROR — static_data_base not found in build/vibe.lst (sjasmplus listing format changed?)" > "/dev/stderr"; \
+	            exit 1 } }' build/vibe.lst
