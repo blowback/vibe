@@ -987,10 +987,34 @@ render_emit_one_row:
     JR      C, .hit_eof
     CP      0x0A
     JR      Z, .hit_lf
+    CP      0x0D
+    JR      Z, .hit_cr                  ; Story 2.5 UAT step 11 fix: CRLF tolerance
 
     ;; target = A; advance read_pos.
     INC     HL
     LD      (render_read_pos), HL
+    JR      .have_target
+
+.hit_cr:
+    ;; CR (0x0D) in the buffer would, if emitted raw to BIOS_CONOUT,
+    ;; reset the VT52 cursor to column 0 of the current row. Subsequent
+    ;; in-run cell emits (gated by render_in_run) skip the ESC Y
+    ;; re-positioning and overwrite earlier cells — manifesting as
+    ;; "missing characters and inserted characters" corruption (Ant's
+    ;; Story 2.5 hardware UAT step 11 report, 2026-05-15). Initial
+    ;; render was unaffected only because shadow starts as spaces and
+    ;; cells after the CR matched shadow → no in-run emit followed the
+    ;; CR. Scroll-driven re-emit exposed the bug because varying line
+    ;; lengths put differing content past the CR.
+    ;;
+    ;; Treat CR as a space target (render-cell width 1; advance
+    ;; read_pos by 1; do NOT set past_eol — the LF that follows still
+    ;; needs to fire .hit_lf normally). Matches deferred-work line 76's
+    ;; "filter at emit" design call, scoped narrowly to CR for now;
+    ;; TAB / NUL / high-bit handling deferred to a future story.
+    INC     HL
+    LD      (render_read_pos), HL
+    LD      A, 0x20
     JR      .have_target
 
 .hit_lf:

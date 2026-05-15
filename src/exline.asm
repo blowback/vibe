@@ -544,11 +544,32 @@ exline_cancel:
 ; path; cmd_quit's dirty-refusal path) rely on this so the
 ; banner survives the cleanup.
 ;
+; Tail-JPs parser_clear (Story 2.5 hardware UAT step 14 fix):
+; this is THE path back to NORMAL from COMMAND mode for every
+; :Esc and every :cmd-completion (cmd_edit, cmd_write, cmd_quit
+; dirty refusal, etc.). enter_normal_mode is NOT on this path
+; (the body inlines the mode flip), so the AC13 RET → JP
+; parser_clear patch on enter_normal_mode does not cover the
+; `:Esc` round-trip. Routing exline_cancel_core through
+; parser_clear closes that seam: any stale count / operator /
+; motion-prefix from before the `:` is dropped when the user
+; returns to NORMAL. Aligns with AC13's "Decision: clear parser
+; state on Esc-to-NORMAL".
+;
+; parser_clear preserves the return address on the stack: CALLers
+; (exline_cancel, cmd_quit .dirty path) see parser_clear's own
+; RET return them to their original caller. JPers (cmd_edit /
+; cmd_edit_force / cmd_write / cmd_write_quit tail-JPs;
+; exline_dispatch no-match tail-JP) bottom out at parser_clear's
+; RET into dispatch_key's caller (input_loop.dispatch).
+;
 ; In:      (none)
 ; Out:     ex_buffer length = 0; mode_byte = MODE_NORMAL;
-;          status_dirty = 1.
-; Trashes: A, F.
-; Calls:   (none).
+;          status_dirty = 1; count_accumulator = 0;
+;          pending_operator = 0; pending_motion_prefix = 0.
+; Trashes: A, HL, F. (HL added vs the pre-fix contract because
+;          parser_clear writes count_accumulator via HL.)
+; Calls:   parser_clear (tail-JP).
 ; ----------------------------------------------------------------
 exline_cancel_core:
     XOR     A
@@ -557,7 +578,7 @@ exline_cancel_core:
     LD      (mode_byte), A
     LD      A, 1
     LD      (status_dirty), A           ; ensure render picks up the row
-    RET
+    JP      parser_clear                ; tail-JP — closes the :Esc seam (Story 2.5 UAT step 14)
 
 
 ;; ============================================================

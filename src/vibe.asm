@@ -41,7 +41,8 @@
 ;   src/input.asm (Story 1.8); src/statusln.asm (Story 1.5);
 ;   src/gapbuf.asm (Story 1.7); src/render.asm (Story 1.11);
 ;   src/dispatch.asm (Story 1.9); src/parser.asm (Story 1.10);
-;   src/exline.asm (Story 2.1); src/fileio.asm (Story 2.2)
+;   src/motions.asm (Story 2.5); src/exline.asm (Story 2.1);
+;   src/fileio.asm (Story 2.2)
 ; ============================================================
 
 ;; --- Compile-time-constant includes (dependency order per AR25) ---
@@ -116,17 +117,28 @@
 
 ;; --- Command parser (MC4; parser.asm — Story 1.10) ---
 ; AR25 order: dispatch -> parser -> motions. motions.asm
-; (Story 2.5+) does not yet exist; when it lands it will slot
-; in AFTER parser.asm here. Production callers wired in this
-; story's input_loop body — see `input_loop:` below.
+; (Story 2.5) lands the first cursor-motion primitives and slots
+; in immediately AFTER parser.asm here. Production callers
+; wired in this story's input_loop body — see `input_loop:`
+; below.
     INCLUDE "parser.asm"
 
+;; --- Cursor motions (FR18-FR23; motions.asm — Story 2.5+) ---
+; AR25 order: parser -> motions -> (edits / visual / search yet
+; to land) -> exline -> fileio -> undo. Story 2.5 lands the
+; h/j/k/l intra-line and inter-line motions; Story 2.6 extends
+; with w/b/0/$/gg/G; Story 2.7 verifies counted-motion
+; integration end-to-end. dispatch_normal's h/j/k/l entries
+; forward-reference motion_h / motion_j / motion_k / motion_l;
+; sjasmplus's two-pass assembly resolves them here.
+    INCLUDE "motions.asm"
+
 ;; --- Ex command-line (FR14, FR3, FR8; exline.asm — Story 2.1) ---
-; AR25 order: parser -> (motions / edits / visual / search yet
-; to land) -> exline -> fileio -> undo. With the intermediate
-; modules not yet present, exline slots in immediately after
-; parser; future stories (2.5 motions, 2.8-2.13 edits, 3.x
-; search/visual) will INCLUDE between parser.asm and exline.asm
+; AR25 order: parser -> motions -> (edits / visual / search yet
+; to land) -> exline -> fileio -> undo. With the edits / visual
+; / search modules not yet present, exline slots in immediately
+; after motions; future stories (2.8-2.13 edits, 3.x
+; search/visual) will INCLUDE between motions.asm and exline.asm
 ; as they arrive. dispatch_command's table forward-references
 ; exline_begin / exline_append_literal / exline_backspace /
 ; exline_dispatch / exline_cancel; sjasmplus's two-pass

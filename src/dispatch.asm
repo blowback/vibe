@@ -94,6 +94,15 @@
 ;                     dispatch_command), exline_backspace,
 ;                     exline_dispatch, exline_cancel; all
 ;                     forward-referenced via sjasmplus two-pass)
+;   src/motions.asm  (Story 2.5 — motion_h / motion_j / motion_k
+;                     / motion_l forward-referenced from
+;                     dispatch_normal; parser_clear tail-JPs from
+;                     mode-change and unbound handlers per AC13)
+;   src/parser.asm   (Story 2.5 — parser_clear is the AC13
+;                     tail-JP target of every mode-change and
+;                     unbound handler; was already a dependency
+;                     for dispatch_normal's digit / operator /
+;                     motion-prefix entries)
 ; ============================================================
 
 ;; ============================================================
@@ -208,11 +217,18 @@ dispatch_key:
 ; empty msg_mode_normal pads status_buffer with spaces — vi
 ; convention is "no banner in normal mode").
 ;
+; Tail-JPs parser_clear (Story 2.5 AC13) so any pending count /
+; operator / motion-prefix from a previous NORMAL-mode keystroke
+; doesn't leak across the Esc-to-NORMAL transition. Vi-spirit:
+; Esc cancels the in-progress command; stale parser state goes
+; with it.
+;
 ; In:      A = key just consumed (MC4; usually VT52_ESC = 0x1B)
 ; Out:     mode_byte = MODE_NORMAL; status_buffer cleared;
-;          status_dirty set
-; Trashes: A, BC, DE, HL, F (via status_set_message)
-; Calls:   status_set_message
+;          status_dirty set; count_accumulator = 0;
+;          pending_operator = 0; pending_motion_prefix = 0.
+; Trashes: A, BC, DE, HL, F (via status_set_message + parser_clear)
+; Calls:   status_set_message; parser_clear (tail-JP)
 ; ----------------------------------------------------------------
 enter_normal_mode:
     LD      A, MODE_NORMAL
@@ -220,7 +236,7 @@ enter_normal_mode:
     LD      HL, msg_mode_normal
     XOR     A                   ; non-error code arg (AR16 convention)
     CALL    status_set_message
-    RET
+    JP      parser_clear
 
 ; ----------------------------------------------------------------
 ; enter_insert_mode
@@ -228,10 +244,17 @@ enter_normal_mode:
 ; for FR25-FR27 also route here). Writes MODE_INSERT to
 ; mode_byte and shows "-- insert --" in the status line (FR17).
 ;
+; Tail-JPs parser_clear (Story 2.5 AC13) so any count / operator
+; from before the mode change doesn't bleed into the INSERT
+; session. Vibe doesn't support "5i = insert 5 times" (the count
+; semantics would be Story 2.8+'s decision); for Story 2.5 the
+; pending state is dead weight and is dropped.
+;
 ; In:      A = key just consumed (MC4; one of i/a/o/O)
-; Out:     mode_byte = MODE_INSERT; status indicator shown
+; Out:     mode_byte = MODE_INSERT; status indicator shown;
+;          parser state zeroed.
 ; Trashes: A, BC, DE, HL, F
-; Calls:   status_set_message
+; Calls:   status_set_message; parser_clear (tail-JP)
 ; ----------------------------------------------------------------
 enter_insert_mode:
     LD      A, MODE_INSERT
@@ -239,7 +262,7 @@ enter_insert_mode:
     LD      HL, msg_mode_insert
     XOR     A
     CALL    status_set_message
-    RET
+    JP      parser_clear
 
 ; ----------------------------------------------------------------
 ; enter_visual_mode
@@ -247,11 +270,14 @@ enter_insert_mode:
 ; VIS_CHAR per AC7 ("update mode_byte and visual_submode if
 ; entering visual"); concrete visual handlers land in Story 3.3.
 ;
+; Tail-JPs parser_clear (Story 2.5 AC13) — same rationale as
+; enter_insert_mode.
+;
 ; In:      A = 'v' (MC4)
 ; Out:     mode_byte = MODE_VISUAL; visual_submode = VIS_CHAR;
-;          status indicator shown
+;          status indicator shown; parser state zeroed.
 ; Trashes: A, BC, DE, HL, F
-; Calls:   status_set_message
+; Calls:   status_set_message; parser_clear (tail-JP)
 ; ----------------------------------------------------------------
 enter_visual_mode:
     LD      A, MODE_VISUAL
@@ -261,7 +287,7 @@ enter_visual_mode:
     LD      HL, msg_mode_visual
     XOR     A
     CALL    status_set_message
-    RET
+    JP      parser_clear
 
 
 ;; ============================================================
@@ -310,39 +336,48 @@ mode_search_prompt_stub:
 ; ----------------------------------------------------------------
 ; unbound_normal
 ; Entered from dispatch_key when the key is not in dispatch_normal.
-; Per AC4: leaves all editor state unchanged (mode_byte,
-; cursor_offset, visual_anchor, count_accumulator,
-; pending_operator, pending_motion_prefix all unchanged) and
-; surfaces a status-line "unbound key" message — the Epic-1
+; Surfaces a status-line "unbound key" message — the Epic-1
 ; surrogate for a beep. Does NOT call the BIOS console-out
 ; vector — only render.asm + init.asm emit screen bytes (AR13).
 ;
+; Tail-JPs parser_clear (Story 2.5 AC13) so a stale count or
+; operator doesn't survive an unbound keystroke. Story 1.10's
+; deferred entry called this out: `5 g x` (x unbound) leaving
+; count=5 and prefix='g' pending would make the NEXT 'g' fire
+; the gg-stub spuriously. The tail-JP closes that.
+;
+; The AC4-preserves-state guarantee from Story 1.9 is updated
+; here: mode_byte / cursor_offset / visual_anchor are still
+; unchanged, but the three parser-state fields are intentionally
+; zeroed.
+;
 ; In:      A = key just consumed (MC4)
-; Out:     status line = "unbound key"
+; Out:     status line = "unbound key"; parser state zeroed.
 ; Trashes: A, BC, DE, HL, F
-; Calls:   status_set_message
+; Calls:   status_set_message; parser_clear (tail-JP)
 ; ----------------------------------------------------------------
 unbound_normal:
     LD      HL, msg_unbound_key
     XOR     A
     CALL    status_set_message
-    RET
+    JP      parser_clear
 
 ; ----------------------------------------------------------------
 ; unbound_visual
 ; Symmetric with unbound_normal (architecture line 520 treats
-; normal/visual unbound the same way for Epic 1).
+; normal/visual unbound the same way for Epic 1). Tail-JPs
+; parser_clear for the same reason (Story 2.5 AC13).
 ;
 ; In:      A = key just consumed (MC4)
-; Out:     status line = "unbound key"
+; Out:     status line = "unbound key"; parser state zeroed.
 ; Trashes: A, BC, DE, HL, F
-; Calls:   status_set_message
+; Calls:   status_set_message; parser_clear (tail-JP)
 ; ----------------------------------------------------------------
 unbound_visual:
     LD      HL, msg_unbound_key
     XOR     A
     CALL    status_set_message
-    RET
+    JP      parser_clear
 
 ; ----------------------------------------------------------------
 ; unbound_insert
@@ -448,10 +483,22 @@ dispatch_normal:
     ASSERT  'g' > 'd'
     DEFB    'g'                         ; 'g'     — motion prefix (FR22)
     DEFW    parser_handle_motion_prefix
-    ASSERT  'i' > 'g'
+    ASSERT  'h' > 'g'
+    DEFB    'h'                         ; 'h'     — cursor left (FR18, Story 2.5)
+    DEFW    motion_h
+    ASSERT  'i' > 'h'
     DEFB    'i'                         ; 'i'     — enter insert (FR13)
     DEFW    enter_insert_mode
-    ASSERT  'o' > 'i'
+    ASSERT  'j' > 'i'
+    DEFB    'j'                         ; 'j'     — cursor down (FR19, Story 2.5)
+    DEFW    motion_j
+    ASSERT  'k' > 'j'
+    DEFB    'k'                         ; 'k'     — cursor up (FR19, Story 2.5)
+    DEFW    motion_k
+    ASSERT  'l' > 'k'
+    DEFB    'l'                         ; 'l'     — cursor right (FR18, Story 2.5)
+    DEFW    motion_l
+    ASSERT  'o' > 'l'
     DEFB    'o'                         ; 'o'     — Epic 1 stub for FR26
     DEFW    enter_insert_mode
     ASSERT  'v' > 'o'
