@@ -277,22 +277,28 @@ motion_l:
 ; byte where it doesn't (vi's column-preserving j with
 ; shorter-line clamp — epics line 1071).
 ;
-; Per-step algorithm:
-;   1. col = cursor - line_start(cursor)        [save in motions_col]
-;   2. current_eol = line_end(cursor)
-;   3. If current_eol is past EOF (no LF before EOF), stop — no
+; STICKY COLUMN INVARIANT (Story 2.7 AC10 Option B):
+;   motions_col is captured ONCE at entry (before .step:), and
+;   reused across every step of a counted j. A `5j` from col=4
+;   over a 2-char intermediate line lands at col=1 on that
+;   intermediate line but still uses col=4 against the wider
+;   line two steps later — vi-faithful "sticky column" semantics.
+;
+; Per-step algorithm (motions_col is the entry-time column):
+;   1. current_eol = line_end(cursor)
+;   2. If current_eol is past EOF (no LF before EOF), stop — no
 ;      next line (BH2 last-line clamp).
-;   4. next_line_start = current_eol + 1.       [save in motions_target_start]
-;   5. next_eol = line_end(next_line_start)
-;   6. next_line_length = next_eol - next_line_start
-;   7. clamp_col = (next_line_length > 0) ? next_line_length - 1
+;   3. next_line_start = current_eol + 1.       [save in motions_target_start]
+;   4. next_eol = line_end(next_line_start)
+;   5. next_line_length = next_eol - next_line_start
+;   6. clamp_col = (next_line_length > 0) ? next_line_length - 1
 ;                                          : 0
 ;      (The "-1" because cursor must not land on the LF byte itself;
 ;       the rightmost valid column in an N-char line is N-1. An
 ;       empty line — length 0 — has only one valid position, the
 ;       LF/EOF at line_start itself.)
-;   8. new_col = min(col, clamp_col)
-;   9. cursor = next_line_start + new_col       [commit]
+;   7. new_col = min(motions_col, clamp_col)
+;   8. cursor = next_line_start + new_col       [commit]
 ;
 ; In:      A = 'j' (MC4; ignored).
 ; Out:     cursor_offset updated (or unchanged on no-next-line clamp).
@@ -304,17 +310,17 @@ motion_l:
 ; ----------------------------------------------------------------
 motion_j:
     CALL    motion_apply_count          ; BC = count
-.step:
-    ;; --- col = cursor - line_start(cursor) ---
+
+    ;; --- Sticky column: compute col ONCE at entry (Story 2.7 AC10) ---
     LD      HL, (cursor_offset)
     PUSH    HL                          ; [cursor]
-    CALL    motion_find_line_start      ; HL = current_line_start
+    CALL    motion_find_line_start      ; HL = entry line_start; BC preserved
     POP     DE                          ; DE = cursor; ()
-    EX      DE, HL                      ; HL = cursor, DE = current_line_start
+    EX      DE, HL                      ; HL = cursor, DE = entry line_start
     OR      A
-    SBC     HL, DE                      ; HL = col
+    SBC     HL, DE                      ; HL = entry col
     LD      (motions_col), HL
-
+.step:
     ;; --- current_eol = line_end(cursor) ---
     LD      HL, (cursor_offset)
     CALL    motion_find_line_end        ; HL = current_eol (LF pos) or file_length
@@ -384,20 +390,24 @@ motion_j:
 ; steps), preserving column with shorter-line clamp. Symmetric
 ; with motion_j.
 ;
-; Per-step algorithm:
-;   1. col = cursor - line_start(cursor)              [save in motions_col]
-;   2. current_line_start = line_start(cursor)
-;   3. If current_line_start == 0, stop (already on line 0 —
+; STICKY COLUMN INVARIANT (Story 2.7 AC10 Option B):
+;   motions_col is captured ONCE at entry (before .step:), and
+;   reused across every step of a counted k. Symmetric with
+;   motion_j's sticky-column.
+;
+; Per-step algorithm (motions_col is the entry-time column):
+;   1. current_line_start = line_start(cursor)
+;   2. If current_line_start == 0, stop (already on line 0 —
 ;      BH2 first-line clamp).
-;   4. prev_line_start = line_start(current_line_start - 1)
+;   3. prev_line_start = line_start(current_line_start - 1)
 ;      (Walks from the LF that BEGINS the current line — the byte
 ;       at offset current_line_start - 1 — back to the byte just
 ;       past the prior LF, or to offset 0 at BOF.)
-;   5. prev_line_length = (current_line_start - 1) - prev_line_start
+;   4. prev_line_length = (current_line_start - 1) - prev_line_start
 ;      (Subtract 1 for the LF byte itself.)
-;   6. clamp_col = (prev_line_length > 0) ? prev_line_length - 1 : 0
-;   7. new_col = min(col, clamp_col)
-;   8. cursor = prev_line_start + new_col              [commit]
+;   5. clamp_col = (prev_line_length > 0) ? prev_line_length - 1 : 0
+;   6. new_col = min(motions_col, clamp_col)
+;   7. cursor = prev_line_start + new_col              [commit]
 ;
 ; In:      A = 'k' (MC4; ignored).
 ; Out:     cursor_offset updated (or unchanged on line-0 clamp).
@@ -407,25 +417,28 @@ motion_j:
 ; ----------------------------------------------------------------
 motion_k:
     CALL    motion_apply_count          ; BC = count
-.step:
-    ;; --- col = cursor - line_start(cursor) ---
+
+    ;; --- Sticky column: compute col ONCE at entry (Story 2.7 AC10) ---
     LD      HL, (cursor_offset)
     PUSH    HL                          ; [cursor]
-    CALL    motion_find_line_start      ; HL = current_line_start
+    CALL    motion_find_line_start      ; HL = entry line_start; BC preserved
     POP     DE                          ; DE = cursor; ()
-    EX      DE, HL                      ; HL = cursor, DE = current_line_start
+    EX      DE, HL                      ; HL = cursor, DE = entry line_start
     OR      A
-    SBC     HL, DE                      ; HL = col
+    SBC     HL, DE                      ; HL = entry col
     LD      (motions_col), HL
+.step:
+    ;; --- current_line_start = line_start(cursor) ---
+    LD      HL, (cursor_offset)
+    CALL    motion_find_line_start      ; HL = current_line_start
 
     ;; --- At line 0? current_line_start == 0? ---
-    LD      A, D
-    OR      E
+    LD      A, H
+    OR      L
     JR      Z, .done                    ; can't go up; cursor unchanged
 
     ;; --- prev_line_start = line_start(current_line_start - 1) ---
-    PUSH    DE                          ; [current_line_start]
-    EX      DE, HL                      ; HL = current_line_start
+    PUSH    HL                          ; [current_line_start]
     DEC     HL                          ; HL = current_line_start - 1 (LF of prev line)
     CALL    motion_find_line_start      ; HL = prev_line_start
     LD      (motions_target_start), HL
