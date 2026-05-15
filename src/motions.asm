@@ -695,14 +695,10 @@ is_word_char:
     RET     C                   ; '['..'^' or '`' → NZ
     CP      'z' + 1
     JR      C, .yes             ; 'a'..'z'
-    OR      1                   ; A > 'z' → ensure NZ (A is non-zero anyway, but
-                                ; force-set to keep contract symmetric with the
-                                ; CP-RET-C paths above; OR 1 preserves A's bits
-                                ; in practice because A > 'z' means high nibble
-                                ; >= 7 — bit 0 may already be set; OR 1 only
-                                ; flips A on even bytes. Acceptable trash of A
-                                ; on this single path; documented as preserved
-                                ; on ALL other paths.)
+    OR      A                   ; A > 'z' → ensure NZ. A is non-zero on this path
+                                ; (A >= '{' = 0x7B), so OR A sets Z=0 and leaves
+                                ; A unchanged — honours the "A preserved on every
+                                ; path" contract above. 1 byte vs the prior OR 1.
     RET
 .yes:
     CP      A                   ; CP A always sets Z=1; preserves A
