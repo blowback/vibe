@@ -273,9 +273,7 @@ BIOS_CONOUT EQU test_bios_conout
     INCLUDE "../inc/test_bios_conout_capture.inc"
 
 ;; ----- LOCAL init_teardown stub (Story 2.3: exline.asm cmd_quit references init_teardown) -----
-init_teardown:
-    RET
-
+    INCLUDE "../inc/test_teardown_stub.inc"
 ;; ----- test_pass / test_fail labels -----
     INCLUDE "../inc/test_epilogue.inc"
 

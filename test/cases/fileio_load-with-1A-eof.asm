@@ -141,12 +141,7 @@
     DEFB    "B:EOF1A.TXT 3 bytes"
 
 ;; ----- LOCAL init_teardown stub -----
-init_teardown:
-    LD      A, 1
-    LD      (init_teardown_called), A
-    RET
-init_teardown_called:    DEFB 0
-
+    INCLUDE "../inc/test_teardown_stub.inc"
 ;; ----- test_pass / test_fail labels -----
     INCLUDE "../inc/test_epilogue.inc"
 

@@ -22,20 +22,24 @@
 ;                   render_diff (next input-loop iteration) emits
 ;                   the status row. RI2 holds.
 ;            AR14 — no gap-buffer mutation. ex_buffer is separate
-;                   from the editing buffer; cmd_quit tail-JPs to
-;                   init_teardown, not to gapbuf mutators.
-;                   cmd_edit / cmd_edit_force CALL fileio_load,
-;                   which owns the linear-fill AR14 carve-out
-;                   (documented in src/fileio.asm).
-;            AR15 — no direct BDOS calls. cmd_quit / cmd_quit_force
-;                   tail-JP to init_teardown, whose
-;                   BDOS_CALL BDOS_EXIT (function 0 = warm-boot)
-;                   is the single macro use site reached from the
-;                   quit path. cmd_edit / cmd_edit_force CALL
-;                   fileio_load, which owns the BDOS_OPEN /
-;                   BDOS_SET_DMA / BDOS_READ_SEQ / BDOS_CLOSE
-;                   cluster; this module makes no BDOS calls
-;                   directly.
+;                   from the editing buffer; cmd_quit / cmd_write_quit
+;                   tail-JP to init_teardown, not to gapbuf mutators.
+;                   cmd_edit / cmd_edit_force / cmd_write / cmd_write_quit
+;                   CALL fileio_load / fileio_save, which own the
+;                   AR14 carve-out (load's linear-fill phase) /
+;                   AR14-respecting read-only walk (save) in
+;                   src/fileio.asm.
+;            AR15 — no direct BDOS calls. cmd_quit / cmd_quit_force /
+;                   cmd_write_quit (on save success) tail-JP to
+;                   init_teardown, whose BDOS_CALL BDOS_EXIT
+;                   (function 0 = warm-boot) is the single macro
+;                   use site reached from the quit path. cmd_edit
+;                   / cmd_edit_force CALL fileio_load (BDOS_OPEN /
+;                   SET_DMA / READ_SEQ / CLOSE cluster); cmd_write
+;                   / cmd_write_quit CALL fileio_save (BDOS_DELETE
+;                   inline AR15 carve-out / MAKE / SET_DMA /
+;                   WRITE_SEQ / CLOSE cluster); this module makes
+;                   no BDOS calls directly.
 ;
 ; Public:
 ;   exline_begin               ; ':' entry from dispatch_normal
@@ -65,14 +69,29 @@
 ;   cmd_edit_force             ; Story 2.2: ':e! filename' — skips
 ;                              ; the dirty check; otherwise identical
 ;                              ; to cmd_edit.
+;   cmd_write                  ; Story 2.4: ':w' / ':w filename' —
+;                              ; refuses with msg_missing_filename
+;                              ; only when both arg and filename_buffer
+;                              ; are empty; otherwise re-parses /
+;                              ; parses through fileio_parse_filename
+;                              ; (FR5 updates filename_buffer on arg)
+;                              ; then CALLs fileio_save. Banner survives
+;                              ; through exline_cancel_core.
+;   cmd_write_quit             ; Story 2.4: ':wq' / ':wq filename' —
+;                              ; same save logic; on save success
+;                              ; tail-JP init_teardown; on failure
+;                              ; the funnel's JP input_loop bypasses
+;                              ; the tail-JP (quit gated on save
+;                              ; success; FR52 keeps buffer_dirty).
 ;   exline_command_table       ; ((NUL-terminated key, 2-byte
 ;                              ; handler) list, NUL-terminated
-;                              ; by a zero-length key). Story 2.2
-;                              ; extends from 2 entries (q, q!) to
-;                              ; 4 (e, e!, q, q!) — file-IO commands
-;                              ; grouped before the quit commands so
-;                              ; future inserts in Stories 2.4 / 3.1
-;                              ; are mechanically obvious.
+;                              ; by a zero-length key). Story 2.4
+;                              ; extends from 4 entries (e, e!, q, q!)
+;                              ; to 6 (e, e!, w, wq, q, q!) — file-IO
+;                              ; cluster (e/e!/w/wq) grouped before
+;                              ; the quit cluster (q/q!) so future
+;                              ; inserts in Story 3.1 (/-search) land
+;                              ; mechanically before the quit cluster.
 ;
 ; State owned (read/write):
 ;   ex_buffer                  ; length-prefixed (1B length + 64B
@@ -241,20 +260,24 @@
 ;                             exline_cancel_core.
 ;
 ; Dependencies:
-;   inc/equates.inc  (EX_COMMAND_BUFFER)
+;   inc/equates.inc  (EX_COMMAND_BUFFER; FILENAME_BUFFER_SIZE —
+;                     Story 2.4 strlen guard in cmd_write/cmd_write_quit)
 ;   inc/modes.inc    (MODE_NORMAL, MODE_COMMAND)
 ;   inc/state.inc    (ex_buffer, ex_buffer_text, mode_byte,
-;                     status_dirty, buffer_dirty)
+;                     status_dirty, buffer_dirty, filename_buffer
+;                     — Story 2.4 reads filename_buffer in
+;                     cmd_write / cmd_write_quit)
 ;   src/statusln.asm (status_set_message; msg_no_write,
 ;                     msg_mode_normal, msg_not_editor_command,
 ;                     msg_missing_filename — Story 2.2)
-;   src/init.asm     (init_teardown — cmd_quit / cmd_quit_force's
-;                     tail-JP target; uninstalls the user ISR,
-;                     clears the screen via render_init, and
-;                     warm-boots to CCP via BDOS function 0)
+;   src/init.asm     (init_teardown — cmd_quit / cmd_quit_force /
+;                     cmd_write_quit's tail-JP target; uninstalls
+;                     the user ISR, clears the screen via render_init,
+;                     and warm-boots to CCP via BDOS function 0)
 ;   src/fileio.asm   (fileio_load, fileio_strip_leading_spaces —
-;                     Story 2.2; cmd_edit / cmd_edit_force
-;                     forward-reference via sjasmplus two-pass).
+;                     Story 2.2; fileio_save, fileio_parse_filename
+;                     — Story 2.4; forward-reference via sjasmplus
+;                     two-pass).
 ; ============================================================
 
 ;; ============================================================
@@ -680,6 +703,157 @@ cmd_edit_force:
 
 
 ;; ============================================================
+;; --- Public entry: cmd_write (':w' / ':w filename') ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; cmd_write
+; Story 2.4: ':w' / ':w filename' handler. Refuses with
+; msg_missing_filename only if BOTH the arg region is empty AND
+; the prior filename_buffer is empty (true journey-1a-edge case;
+; a successful Story-2.3 launch always preserves filename_buffer).
+;
+; Two arg-region paths:
+;   - Non-empty (`:w foo.fs`): parse arg via fileio_parse_filename,
+;     UPDATING filename_buffer per FR5. Subsequent bare `:w` saves
+;     to the new name.
+;   - Empty (`:w`): if filename_buffer[0] != 0, re-parse the
+;     canonical display form through fileio_parse_filename (state-
+;     decoupled from any prior fcb_scratch history); else refuse.
+;
+; On a populated filename the handler CALLs fileio_save (which RETs
+; on success after emitting "<FILENAME> N bytes written"; or JPs
+; terminally through bdos_error_funnel on failure), then JPs to
+; exline_cancel_core to clear ex_buffer + mode while preserving the
+; just-set status banner.
+;
+; Entered via the PUSH-DE-RET pseudo-JP from exline_dispatch on
+; the 'w' match.
+;
+; In:      HL = arg-region ptr (within ex_buffer_text + cmd_len);
+;          A  = arg-region length (0..63).
+; Out:     missing filename: msg_missing_filename + JP exline_cancel_core.
+;          Otherwise: fileio_save (may JP terminally through funnel
+;          on BDOS failure — never returns here in that case) + JP
+;          exline_cancel_core.
+; Trashes: A, BC, DE, HL, F.
+; Calls:   fileio_strip_leading_spaces, fileio_parse_filename,
+;          fileio_save, status_set_message, exline_cancel_core.
+; ----------------------------------------------------------------
+cmd_write:
+    CALL    fileio_strip_leading_spaces
+    OR      A
+    JR      Z, .no_arg                      ; empty / all-space arg
+    ;; `:w foo.fs` — parse arg into fcb_scratch + filename_buffer
+    ;; (FR5: subsequent bare `:w` saves to the new name).
+    CALL    fileio_parse_filename
+    JR      .do_save
+.no_arg:
+    ;; Bare `:w` — reuse filename_buffer if populated.
+    LD      A, (filename_buffer)
+    OR      A
+    JR      Z, .missing                     ; no prior filename → refuse
+    CALL    cmd_save_strlen_filename_buffer ; HL = filename_buffer, A = strlen
+    CALL    fileio_parse_filename           ; state-decouple fcb_scratch from prior :e
+.do_save:
+    CALL    fileio_save                     ; banner set on success;
+                                            ;   funnel-JP terminally on failure
+    JP      exline_cancel_core
+.missing:
+    LD      HL, msg_missing_filename
+    XOR     A
+    CALL    status_set_message
+    JP      exline_cancel_core
+
+
+;; ============================================================
+;; --- Public entry: cmd_write_quit (':wq' / ':wq filename') ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; cmd_write_quit
+; Story 2.4: ':wq' / ':wq filename' handler. Same save logic as
+; cmd_write, but on save SUCCESS tail-JPs to init_teardown (FR7
+; warm-boot composition); on save FAILURE the funnel's terminal
+; JP-to-input_loop bypasses the tail-JP — the user stays at the
+; editor with the error banner and buffer_dirty nonzero (FR52
+; load-bearing). Missing-filename refusal stays at the editor
+; (the quit is not attempted — analogous to Story 2.1's BH5).
+;
+; `:wq foo.fs` IS supported (the underlying primitives compose:
+; parse arg → updates filename_buffer per FR5 → save → quit).
+;
+; Entered via the PUSH-DE-RET pseudo-JP from exline_dispatch on
+; the 'wq' match.
+;
+; In:      HL = arg-region ptr; A = arg-region length (0..62
+;          — `wq` is 2 bytes).
+; Out:     missing filename: msg_missing_filename + JP exline_cancel_core
+;          (no quit). save success: tail-JP init_teardown. save
+;          failure: no return (funnel's terminal JP input_loop;
+;          tail-JP bypassed).
+; Trashes: A, BC, DE, HL, F.
+; Calls:   fileio_strip_leading_spaces, fileio_parse_filename,
+;          fileio_save, status_set_message, exline_cancel_core,
+;          init_teardown (tail-JP on save success).
+; ----------------------------------------------------------------
+cmd_write_quit:
+    CALL    fileio_strip_leading_spaces
+    OR      A
+    JR      Z, .no_arg
+    CALL    fileio_parse_filename
+    JR      .do_save
+.no_arg:
+    LD      A, (filename_buffer)
+    OR      A
+    JR      Z, .missing
+    CALL    cmd_save_strlen_filename_buffer
+    CALL    fileio_parse_filename
+.do_save:
+    CALL    fileio_save                     ; failure → funnel JP input_loop;
+                                            ;   the tail-JP below is bypassed
+    JP      init_teardown                   ; success → warm-boot
+.missing:
+    LD      HL, msg_missing_filename
+    XOR     A
+    CALL    status_set_message
+    JP      exline_cancel_core
+
+
+;; ============================================================
+;; --- Internal helper: cmd_save_strlen_filename_buffer ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; cmd_save_strlen_filename_buffer
+; Story 2.4: NUL-scan filename_buffer (max FILENAME_BUFFER_SIZE = 16
+; bytes including terminator) and return HL = filename_buffer +
+; A = NUL-stripped length (0..15). Caller passes the result
+; straight into fileio_parse_filename which expects ptr + length.
+;
+; In:      (none — reads filename_buffer)
+; Out:     HL = filename_buffer, A = length (NUL-exclusive, 0..15).
+; Trashes: A, B, HL, F.
+; ----------------------------------------------------------------
+cmd_save_strlen_filename_buffer:
+    LD      HL, filename_buffer
+    LD      B, 0
+.scan:
+    LD      A, (HL)
+    OR      A
+    JR      Z, .done
+    INC     HL
+    INC     B
+    LD      A, B
+    CP      FILENAME_BUFFER_SIZE - 1
+    JR      C, .scan                        ; B < FILENAME_BUFFER_SIZE-1 → keep going; caps A at 15 on un-NUL buffer
+.done:
+    LD      A, B
+    LD      HL, filename_buffer             ; rewind ptr for caller
+    RET
+
+
+;; ============================================================
 ;; --- Internal helper: exline_compose_status ---
 ;; ============================================================
 
@@ -723,17 +897,22 @@ exline_compose_status:
 ;; ============================================================
 ; Layout per entry: NUL-terminated key string, then 2-byte
 ; handler address (little-endian DEFW). Table terminated by a
-; single zero byte (a zero-length key). Stories 2.2 / 2.4 / 3.1
-; extend by inserting entries before the terminator.
+; single zero byte (a zero-length key). Story 2.4 extended the
+; table from 4 to 6 entries by inserting :w and :wq between :e!
+; and :q; Story 3.1's `/`-search entry will land before :q too.
 
 exline_command_table:
     DEFB    "e", 0                      ; entry 0: ':e'  (length 1)
     DEFW    cmd_edit
     DEFB    "e!", 0                     ; entry 1: ':e!' (length 2)
     DEFW    cmd_edit_force
-    DEFB    "q", 0                      ; entry 2: ':q'  (length 1)
+    DEFB    "w", 0                      ; entry 2: ':w'  (Story 2.4)
+    DEFW    cmd_write
+    DEFB    "wq", 0                     ; entry 3: ':wq' (Story 2.4)
+    DEFW    cmd_write_quit
+    DEFB    "q", 0                      ; entry 4: ':q'  (length 1)
     DEFW    cmd_quit
-    DEFB    "q!", 0                     ; entry 3: ':q!' (length 2)
+    DEFB    "q!", 0                     ; entry 5: ':q!' (length 2)
     DEFW    cmd_quit_force
     DEFB    0                           ; terminator (zero-length key)
 

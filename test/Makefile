@@ -96,4 +96,4 @@ test: $(COMS) $(FIXTURES)
 	[ $$fail -eq 0 ]
 
 clean:
-	rm -f cases/*.com $(FIXTURES)
+	rm -f cases/*.com $(FIXTURES) fixtures/OUT.TXT fixtures/EMPTY.TXT fixtures/PAD100.TXT fixtures/RO.TXT

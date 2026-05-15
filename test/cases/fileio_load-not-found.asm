@@ -135,12 +135,7 @@
     DEFB    "can't open B:NOSUCH.FS"
 
 ;; ----- LOCAL init_teardown stub -----
-init_teardown:
-    LD      A, 1
-    LD      (init_teardown_called), A
-    RET
-init_teardown_called:    DEFB 0
-
+    INCLUDE "../inc/test_teardown_stub.inc"
 ;; ----- LOCAL input_loop stub (REPLACES test_input_loop_stub.inc) -----
 ; The BDOS funnel's `JP input_loop` lands here on the file-not-
 ; found path. Set the funnel_entered sentinel and JP into the

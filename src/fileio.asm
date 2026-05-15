@@ -1,23 +1,38 @@
 ; ============================================================
 ; Module: fileio.asm
-; Purpose: FCB-based file load over the CP/M 2.2 BDOS surface
-;          (FR6 / FR9 / FR10 / FR11 / FR51). Story 2.2 lands the
-;          first production caller of the BDOS_CALL macro in the
-;          file-I/O cluster: BDOS_OPEN (15), BDOS_SET_DMA (26),
-;          BDOS_READ_SEQ (20), BDOS_CLOSE (16). Owns the canonical
-;          FCB scratch and the dynamic status-string composition
-;          for "can't open FILENAME" (open-fail) and
-;          "FILENAME N bytes" (load-success).
+; Purpose: FCB-based file load AND save over the CP/M 2.2 BDOS
+;          surface (FR4 / FR5 / FR6 / FR7 / FR9 / FR10 / FR11 /
+;          FR51 / FR52). Story 2.2 landed the first production
+;          caller of the BDOS_CALL macro for the load side:
+;          BDOS_OPEN (15) / BDOS_SET_DMA (26) / BDOS_READ_SEQ (20)
+;          / BDOS_CLOSE (16). Story 2.4 lands the save side:
+;          fileio_save orchestrates BDOS_DELETE (19) / BDOS_MAKE
+;          (22) / BDOS_WRITE_SEQ (21) / BDOS_CLOSE with a second
+;          AR15 carve-out for the benign DELETE-of-nonexistent
+;          file. Owns the canonical FCB scratch and the dynamic
+;          status-string composition for "can't open FILENAME",
+;          "can't write FILENAME", "FILENAME N bytes",
+;          "FILENAME N bytes written", and "FILENAME [new file]".
 ;
-;          Entry surface for the ex-line:
-;              cmd_edit / cmd_edit_force (in src/exline.asm)
+;          Entry surface for the ex-line (full post-2.4 shape):
+;              cmd_edit / cmd_edit_force   (in src/exline.asm)
 ;                      |
 ;                      v
-;              fileio_load (this module)
+;              fileio_load -> fileio_load_after_open (shared body)
+;              fileio_load_initial (Story 2.3 — launch path)
 ;                      |
 ;                      v
-;              BDOS_OPEN -> BDOS_SET_DMA -> BDOS_READ_SEQ loop
-;              -> BDOS_CLOSE -> gapbuf_move_gap(0) -> status emit
+;              BDOS_OPEN -> SET_DMA -> READ_SEQ loop -> CLOSE
+;
+;              cmd_write / cmd_write_quit   (in src/exline.asm — Story 2.4)
+;                      |
+;                      v
+;              fileio_save
+;                      |
+;                      v
+;              BDOS_SET_DMA -> BDOS_SEARCH_FIRST (R/O pre-check) ->
+;              BDOS_DELETE -> BDOS_MAKE -> BDOS_WRITE_SEQ loop ->
+;              BDOS_CLOSE
 ;
 ;          Architectural enforcement here:
 ;            AR12 — every status-row write enters through
@@ -52,23 +67,52 @@
 ;                   CALL per sector cheaper, and the SR2 walk-through
 ;                   above shows the seam is harmless.
 ;            AR15 — every BDOS call in this module uses the
-;                   BDOS_CALL macro EXCEPT one site: the
-;                   `fileio_load_initial` BDOS_OPEN (Story 2.3) is
-;                   inlined (LD C / CALL BDOS_ENTRY / OR A / JP M)
-;                   so the bdos_error_funnel's terminal JP-to-
-;                   input_loop does NOT fire on open-fail. The
-;                   launch path needs to surface a "[new file]"
-;                   banner and RET back to init_cold_start so
-;                   Stages 6/7 (render_full + fall-through to
-;                   input_loop) complete; the funnel would skip
-;                   those stages. The carve-out is single-site,
-;                   inline-annotated, and otherwise byte-identical
+;                   BDOS_CALL macro EXCEPT THREE documented carve-outs:
+;
+;                   (1) LAUNCH CARVE-OUT (Story 2.3):
+;                   `fileio_load_initial`'s BDOS_OPEN is inlined
+;                   (LD C / CALL BDOS_ENTRY / OR A / JP M) so the
+;                   bdos_error_funnel's terminal JP-to-input_loop
+;                   does NOT fire on open-fail. The launch path
+;                   needs to surface a "[new file]" banner and RET
+;                   back to init_cold_start so Stages 6/7
+;                   (render_full + fall-through to input_loop)
+;                   complete; the funnel would skip those stages.
+;
+;                   (2) SAVE-PRECHECK CARVE-OUT (Story 2.4 hardware
+;                   UAT step 12 fix): `fileio_save`'s Step 0 BDOS_
+;                   SEARCH_FIRST is inlined so the funnel does NOT
+;                   falsely surface "can't write FILENAME" on the
+;                   0xFF "no matching R/O entry" return — the
+;                   NORMAL case for any save target that is R/W
+;                   or not-yet-on-disk. The pre-check exists
+;                   because CP/M 2.2 BDOS warm-boots on R/O-file
+;                   writes BEFORE the caller sees the failure;
+;                   without this carve-out we'd lose unsaved data
+;                   to BDOS's intercept on the subsequent WRITE_SEQ.
+;
+;                   (3) SAVE CARVE-OUT (Story 2.4):
+;                   `fileio_save`'s BDOS_DELETE is inlined (LD C /
+;                   CALL BDOS_ENTRY; A return code discarded) so
+;                   the funnel does NOT falsely surface "can't
+;                   write FILENAME" on the 0xFF return that simply
+;                   means "no prior file to delete" — the NORMAL
+;                   first-save case for a not-yet-on-disk filename.
+;                   The DELETE's only purpose is to clear any stale
+;                   directory entry of the same name before MAKE;
+;                   either return code (0..3 = deleted, 0xFF = no
+;                   matching file) lets MAKE proceed.
+;
+;                   All three carve-outs are single-site,
+;                   inline-annotated (`; AR15 launch carve-out` /
+;                   `; AR15 save-precheck carve-out` / `; AR15
+;                   save carve-out`), and otherwise byte-identical
 ;                   to the macro expansion. The macro's `JP M`
-;                   still catches sign-bit returns (0xFF from
-;                   BDOS_OPEN's file-not-found) at every other
-;                   site; positive failure codes from
-;                   BDOS_READ_SEQ (A >= 2) have bit 7 clear and
-;                   are inspected per-call here.
+;                   still catches sign-bit returns at every other
+;                   site; positive failure codes (BDOS_READ_SEQ
+;                   A >= 2; BDOS_WRITE_SEQ A = 1..127 = disk-full
+;                   / extent-exhausted class) have bit 7 clear
+;                   and are inspected per-call by the caller.
 ;            AR16 — message strings are lowercase, no trailing
 ;                   period. The dynamic "FILENAME N bytes" includes
 ;                   the uppercase-stored filename — AR16's "all
@@ -99,10 +143,26 @@
 ;                               ; PRESERVED on open fail. RET on
 ;                               ; every terminal path (no funnel
 ;                               ; routing — see AR15 carve-out).
+;   fileio_save                 ; Story 2.4 — serialise the gap-buffer
+;                               ; payload to disk through DELETE /
+;                               ; MAKE / SET_DMA / WRITE_SEQ-loop /
+;                               ; CLOSE. RET on success with
+;                               ; buffer_dirty cleared and the
+;                               ; "<FILENAME> N bytes written" banner
+;                               ; emitted; failure routes the funnel
+;                               ; with the pre-staged "can't write
+;                               ; FILENAME" banner — never returns.
+;                               ; fcb_scratch + filename_buffer must
+;                               ; be populated by the caller
+;                               ; (cmd_write / cmd_write_quit
+;                               ; re-parse filename_buffer through
+;                               ; fileio_parse_filename for state-
+;                               ; decoupled FCB construction).
 ;   fileio_strip_leading_spaces ; HL = ptr, A = length -> HL' =
 ;                               ; first non-space, A' = remaining
 ;                               ; length. Used by cmd_edit /
-;                               ; cmd_edit_force before passing
+;                               ; cmd_edit_force / cmd_write /
+;                               ; cmd_write_quit before passing
 ;                               ; the arg region down here.
 ;
 ; State owned (read/write):
@@ -110,18 +170,43 @@
 ;                               ; zero at every fileio_load entry;
 ;                               ; drive + basename + extension
 ;                               ; overwritten by parse_filename.
+;                               ; Story 2.4 cmd_write / cmd_write_quit
+;                               ; re-parse filename_buffer through
+;                               ; parse_filename to rebuild fcb_scratch
+;                               ; for the save (state-decoupled from
+;                               ; the prior load's :e history).
 ;   fileio_status_scratch       ; 48-byte holding area for the
 ;                               ; dynamic status strings.
 ;   fileio_dec_dest             ; 2-byte scratch for u16_to_dec
 ;                               ; output-pointer marshalling.
+;   fileio_write_count          ; Story 2.4 — 2-byte total payload
+;                               ; cached at fileio_save Step 5,
+;                               ; consumed at Step 11 to seed
+;                               ; fileio_compose_written_status.
+;   fileio_save_dma_ptr         ; Story 2.4 — 2-byte DMA write
+;                               ; pointer threaded through the
+;                               ; gap-walk and EOF-pad phases.
+;   fileio_save_dma_remain      ; Story 2.4 — 1-byte slot count
+;                               ; (1..128) of free DMA space.
 ;   gap_start                   ; AR14 CARVE-OUT — written during
 ;                               ; the linear-fill read loop only.
 ;                               ; All other writes go through
-;                               ; gapbuf.asm's primitives.
+;                               ; gapbuf.asm's primitives. Story 2.4
+;                               ; fileio_save is READ-ONLY against
+;                               ; the gap regions — no new AR14
+;                               ; carve-out needed.
 ;   bdos_error_pre_msg          ; module-local in statusln.asm.
-;                               ; Pre-staged before BDOS_OPEN;
-;                               ; cleared after success. The
-;                               ; funnel zeroes it post-emit too.
+;                               ; TWO writer sites in this module:
+;                               ; (1) fileio_load Step 3 — pre-stages
+;                               ; "can't open FILENAME"; cleared at
+;                               ; Step 5 after success.
+;                               ; (2) fileio_save Step 1 — pre-stages
+;                               ; "can't write FILENAME"; cleared at
+;                               ; Step 9 after the full MAKE / WRITE_SEQ
+;                               ; loop / CLOSE sequence succeeds.
+;                               ; The funnel zeroes the cell post-emit
+;                               ; on any failure path so a stale value
+;                               ; cannot leak across unrelated errors.
 ;   filename_buffer             ; written by fileio_parse_filename
 ;                               ; (canonical display name);
 ;                               ; read by compose helpers;
@@ -179,19 +264,53 @@
 ;                                     render_mark_all_dirty,
 ;                                     status_set_message.
 ;
+;   fileio_save:                 In:  fcb_scratch populated (drive +
+;                                     basename + ext at +0..+11; zeros
+;                                     +12..+35); filename_buffer
+;                                     populated (NUL-terminated; first
+;                                     byte != 0); gap_start / gap_end
+;                                     defining the payload halves.
+;                                Out: Success: file written; buffer_dirty
+;                                     = 0; gap state unchanged; status =
+;                                     "FILENAME N bytes written"; RET.
+;                                     R/O refusal (Step 0 pre-check
+;                                     detects R/O target): status =
+;                                     "can't write FILENAME"; gap +
+;                                     buffer_dirty preserved (FR52); RET.
+;                                     Failure (MAKE / WRITE_SEQ /
+;                                     CLOSE): no return — funnel
+;                                     surfaces "can't write FILENAME"
+;                                     and JPs to input_loop;
+;                                     buffer_dirty stays nonzero (FR52).
+;                                Trashes: A, BC, DE, HL, F.
+;                                Calls: fileio_compose_cant_write,
+;                                     BDOS_ENTRY (inline AR15 save-
+;                                     precheck carve-out for SEARCH_FIRST;
+;                                     inline AR15 save carve-out for
+;                                     DELETE), BDOS_CALL (SET_DMA / MAKE
+;                                     / WRITE_SEQ / CLOSE),
+;                                     fileio_save_walk_bytes,
+;                                     fileio_save_flush_sector,
+;                                     fileio_compose_written_status,
+;                                     status_set_message.
+;
 ; Dependencies:
 ;   inc/equates.inc  (GAP_BUFFER_MAX)
 ;   inc/bios.inc     (DEFAULT_DMA; DEFAULT_FCB — Story 2.3 launch path;
-;                     BDOS_ENTRY — Story 2.3 AR15 launch carve-out)
+;                     BDOS_ENTRY — Story 2.3 launch AR15 carve-out +
+;                     Story 2.4 save AR15 carve-out)
 ;   inc/bdos.inc     (BDOS_CALL, BDOS_OPEN, BDOS_SET_DMA,
-;                     BDOS_READ_SEQ, BDOS_CLOSE)
+;                     BDOS_READ_SEQ, BDOS_CLOSE; Story 2.4 adds
+;                     BDOS_DELETE, BDOS_MAKE, BDOS_WRITE_SEQ,
+;                     BDOS_SEARCH_FIRST — the last for fileio_save's
+;                     Step 0 R/O pre-check)
 ;   inc/state.inc    (gap_start, gap_end, cursor_offset,
 ;                     buffer_dirty, filename_buffer)
 ;   src/gapbuf.asm   (gapbuf_init, gapbuf_move_gap)
 ;   src/render.asm   (render_mark_all_dirty)
 ;   src/statusln.asm (status_set_message, msg_file_too_large,
 ;                     msg_read_error, msg_mode_normal;
-;                     bdos_error_pre_msg override)
+;                     bdos_error_pre_msg override + bdos_error_funnel)
 ; ============================================================
 
 ;; ============================================================
@@ -349,6 +468,344 @@ fileio_load_after_open:
     XOR     A                               ; non-error code (AR16)
     CALL    status_set_message
     RET
+
+
+;; ============================================================
+;; --- Public entry: fileio_save (Story 2.4) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; fileio_save
+; Story 2.4: serialise the gap-buffer contents to disk through
+; BDOS_DELETE -> BDOS_MAKE -> BDOS_SET_DMA -> BDOS_WRITE_SEQ-loop
+; -> BDOS_CLOSE. The walk visits the two gap halves in logical
+; order (before-gap then after-gap) byte-by-byte into the 128-byte
+; DMA buffer at DEFAULT_DMA, flushing one sector per fill. A
+; trailing EOF sector containing 0x1A + spaces ALWAYS terminates
+; the file — including the 0-byte empty-buffer case (one sector
+; of 0x1A + 127 spaces) and the exact-multiple-of-128 case (the
+; walk's final flush + a separate EOF sector).
+;
+; AR15 SAVE CARVE-OUT: the Step-2 BDOS_DELETE is inlined (not via
+; the BDOS_CALL macro) because 0xFF (file-not-matched) is the
+; NORMAL first-save case for a not-yet-on-disk filename; routing
+; through the funnel would falsely surface "can't write FILENAME"
+; on every first save. The macro is used for MAKE / SET_DMA /
+; WRITE_SEQ / CLOSE — sign-bit returns from those genuinely are
+; error conditions, and the funnel's terminal JP-input_loop +
+; pre-staged "can't write FILENAME" banner is the right response.
+;
+; AR14 status: this routine writes nothing to the gap buffer.
+; The walk's LDIR-style per-byte read from [GAP_BUFFER_BASE,
+; gap_start) and [gap_end, GAP_BUFFER_BASE + GAP_BUFFER_MAX) is
+; read-only; the gap halves and cursor_offset survive unchanged.
+; No new AR14 carve-out needed.
+;
+; In:      fcb_scratch populated (drive byte +0; 8-char space-
+;          padded uppercase basename +1..+8; 3-char space-padded
+;          uppercase extension +9..+11; zeros +12..+35).
+;          filename_buffer populated (NUL-terminated canonical
+;          display form; first byte != 0).
+;          gap_start / gap_end / GAP_BUFFER_BASE / GAP_BUFFER_MAX
+;          defining the two-halves payload.
+; Out:     Success: file written to disk; buffer_dirty = 0;
+;          filename_buffer + gap state unchanged; status row =
+;          "<FILENAME> N bytes written". RET.
+;          Failure (Step 0 R/O refusal / MAKE 0xFF / WRITE_SEQ
+;          non-zero / CLOSE 0xFF): no return — bdos_error_funnel
+;          surfaces "can't write FILENAME" then JPs to input_loop.
+;          buffer_dirty stays nonzero (FR52); filename_buffer + gap
+;          preserved; ex_buffer + mode cleared by the funnel. The
+;          funnel route is load-bearing: cmd_write_quit's tail-JP
+;          to init_teardown MUST be bypassed on every failure or
+;          :wq on a failing save warm-boots and discards the buffer.
+; Trashes: A, BC, DE, HL, F.
+; Calls:   fileio_compose_cant_write (pre-stage banner),
+;          BDOS_ENTRY (inline AR15 save carve-out for DELETE),
+;          BDOS_CALL (BDOS_MAKE / BDOS_SET_DMA / BDOS_WRITE_SEQ /
+;          BDOS_CLOSE), fileio_save_walk_bytes, fileio_save_flush_sector,
+;          fileio_compose_written_status, status_set_message.
+; ----------------------------------------------------------------
+fileio_save:
+    ;; Step 0: R/O PRE-CHECK (AR15 SAVE-PRECHECK CARVE-OUT).
+    ;;
+    ;; CP/M 2.2 BDOS detects R/O-file writes at the BDOS level
+    ;; and warm-boots ("Bdos Err On <d>: File R/O") BEFORE
+    ;; returning to the caller. Our macro funnel's terminal
+    ;; JP-to-input_loop never runs because BDOS doesn't return —
+    ;; the pre-staged "can't write FILENAME" banner is unreachable
+    ;; on that path, and any unsaved buffer content is lost to the
+    ;; warm-boot. To honor FR52 / NFR6 ("no silent data loss") for
+    ;; STAT-marked R/O files we MUST detect the R/O attribute
+    ;; BEFORE issuing the destructive BDOS_DELETE / BDOS_MAKE.
+    ;;
+    ;; The probe: SEARCH_FIRST with the FCB ext-char-0 high bit
+    ;; SET — under CP/M 2.2 that search query matches only R/O
+    ;; directory entries; A = 0..3 means a R/O entry exists at
+    ;; this filename. The matched entry returns into the DMA
+    ;; buffer; its byte +9 high bit confirms (defends against an
+    ;; iz-cpm-style lenient BDOS that doesn't filter on attribute
+    ;; bits — iz-cpm strips the high bit in both the search match
+    ;; AND the returned directory data, so its DMA inspection
+    ;; passes through harmlessly).
+    ;;
+    ;; AR15 carve-out: SEARCH_FIRST is inlined because the macro
+    ;; funnel would falsely surface "can't write FILENAME" on
+    ;; A = 0xFF (no matching R/O entry), which is the NORMAL case
+    ;; for any save target that is either R/W or not-yet-on-disk.
+    LD      DE, DEFAULT_DMA
+    BDOS_CALL BDOS_SET_DMA                  ; SEARCH_FIRST writes the directory record here
+    LD      A, (fcb_scratch + 9)
+    OR      0x80                            ; set R/O bit in search query
+    LD      (fcb_scratch + 9), A
+    LD      C, BDOS_SEARCH_FIRST
+    LD      DE, fcb_scratch
+    CALL    BDOS_ENTRY                      ; AR15 save-precheck carve-out
+    LD      B, A                            ; save SEARCH rc across FCB restore
+    LD      A, (fcb_scratch + 9)
+    AND     0x7F                            ; restore canonical FCB
+    LD      (fcb_scratch + 9), A
+    LD      A, B
+    CP      0xFF
+    JR      Z, .precheck_done               ; no R/O entry → proceed
+    CP      4
+    JR      NC, .precheck_done              ; defensive: A>=4 → out-of-spec BDOS rc → treat as no match
+    ;; A = 0..3, directory entry at DMA + A * 32. Inspect ext
+    ;; char 0 (offset +9 within the entry) high bit to confirm
+    ;; R/O — guards against the iz-cpm-lenient case where SEARCH
+    ;; matched an R/W entry despite the attribute-bit query.
+    ADD     A, A
+    ADD     A, A
+    ADD     A, A
+    ADD     A, A
+    ADD     A, A                            ; A = entry_index * 32
+    LD      E, A
+    LD      D, 0
+    LD      HL, DEFAULT_DMA + 9
+    ADD     HL, DE                          ; HL -> entry.ext_char_0
+    BIT     7, (HL)
+    JR      Z, .precheck_done               ; high bit clear → not R/O → proceed
+    ;; R/O CONFIRMED — refuse via bdos_error_funnel so the funnel's
+    ;; terminal JP-to-input_loop bypasses cmd_write_quit's tail-JP
+    ;; to init_teardown. Mirrors fileio_save_flush_sector's
+    ;; .write_abort pattern. A normal RET here would leak control
+    ;; back to cmd_write_quit which would warm-boot and discard the
+    ;; buffer — defeating the FR52 protection this pre-check exists
+    ;; to enforce. buffer_dirty / filename_buffer / gap state all
+    ;; preserved; user can STAT $R/W and retry.
+    CALL    fileio_compose_cant_write       ; HL = fileio_status_scratch
+    LD      (bdos_error_pre_msg), HL
+    JP      bdos_error_funnel               ; terminal JP input_loop
+.precheck_done:
+
+    ;; Step 1: pre-stage "can't write <filename>" banner so the
+    ;; BDOS_CALL macro's funnel surfaces it on any non-DELETE
+    ;; sign-bit failure (MAKE / WRITE_SEQ / CLOSE).
+    CALL    fileio_compose_cant_write       ; HL = fileio_status_scratch
+    LD      (bdos_error_pre_msg), HL
+
+    ;; Step 2: AR15 SAVE CARVE-OUT — inline BDOS_DELETE.
+    ;; bdos_error_funnel would falsely surface "can't write
+    ;; FILENAME" on the 0xFF return that simply means "no prior
+    ;; file to delete" — the NORMAL first-save case. A's return
+    ;; code is ignored: 0..3 = file existed and was deleted,
+    ;; 0xFF = no matching file. Either result lets MAKE proceed.
+    LD      C, BDOS_DELETE
+    LD      DE, fcb_scratch
+    CALL    BDOS_ENTRY                      ; AR15 save carve-out
+
+    ;; Step 3: BDOS_MAKE. Macro routing applies on 0xFF (directory
+    ;; full / drive offline / etc.) — funnel surfaces the
+    ;; pre-staged banner; buffer_dirty stays nonzero (FR52). The
+    ;; R/O case was already filtered by the Step 0 pre-check.
+    LD      DE, fcb_scratch
+    BDOS_CALL BDOS_MAKE
+
+    ;; Step 4: defensive DMA reset. Redundant against Step 0's
+    ;; SET_DMA on the green path (no DMA-changing call between
+    ;; them) but kept as the canonical write-loop entry — cheap
+    ;; insurance against a future intervening BDOS call.
+    LD      DE, DEFAULT_DMA
+    BDOS_CALL BDOS_SET_DMA
+
+    ;; Step 5: compute total payload = H1 + H2 (sum of the two
+    ;; gap halves), cache in fileio_write_count for Step 11.
+    LD      HL, (gap_start)
+    LD      DE, GAP_BUFFER_BASE
+    OR      A
+    SBC     HL, DE                          ; HL = H1 (before-gap)
+    PUSH    HL                              ; save H1
+    LD      HL, GAP_BUFFER_BASE + GAP_BUFFER_MAX
+    LD      DE, (gap_end)
+    OR      A
+    SBC     HL, DE                          ; HL = H2 (after-gap)
+    POP     DE                              ; DE = H1
+    ADD     HL, DE                          ; HL = total payload
+    LD      (fileio_write_count), HL
+
+    ;; Init walk state: dma_ptr = DEFAULT_DMA, dma_remain = 128.
+    LD      HL, DEFAULT_DMA
+    LD      (fileio_save_dma_ptr), HL
+    LD      A, 128
+    LD      (fileio_save_dma_remain), A
+
+    ;; Step 6a: walk before-gap half [GAP_BUFFER_BASE, gap_start).
+    LD      HL, (gap_start)
+    LD      DE, GAP_BUFFER_BASE
+    OR      A
+    SBC     HL, DE                          ; HL = H1 length
+    LD      B, H
+    LD      C, L                            ; BC = H1
+    LD      HL, GAP_BUFFER_BASE             ; HL = src ptr
+    CALL    fileio_save_walk_bytes
+
+    ;; Step 6b: walk after-gap half [gap_end, GAP_BUFFER_BASE + GAP_BUFFER_MAX).
+    LD      HL, GAP_BUFFER_BASE + GAP_BUFFER_MAX
+    LD      DE, (gap_end)
+    OR      A
+    SBC     HL, DE                          ; HL = H2 length
+    LD      B, H
+    LD      C, L                            ; BC = H2
+    LD      HL, (gap_end)                   ; HL = src ptr
+    CALL    fileio_save_walk_bytes
+
+    ;; Step 7: EOF-pad. Fill the remaining dma_remain slots with
+    ;; 0x1A then spaces; write the final sector. Invariant on
+    ;; entry: fileio_save_dma_remain ∈ [1, 128] — fileio_save_walk_bytes'
+    ;; flush guarantees this (a byte that would have left
+    ;; dma_remain == 0 triggers flush + reset to 128 inside the
+    ;; walk, before the walk returns). The empty-buffer case
+    ;; (0 payload bytes) lands here with dma_remain = 128 untouched.
+    LD      HL, (fileio_save_dma_ptr)
+    LD      A, (fileio_save_dma_remain)
+    LD      B, A                            ; B = slots to fill (1..128)
+    LD      A, 0x1A                         ; first slot = EOF marker
+.eof_fill:
+    LD      (HL), A
+    INC     HL
+    LD      A, ' '                          ; subsequent slots = spaces
+    DJNZ    .eof_fill
+
+    ;; Write the EOF sector. The flush resets dma state (unused
+    ;; from here onward — about to close).
+    CALL    fileio_save_flush_sector
+
+    ;; Step 8: BDOS_CLOSE. Macro routing applies on 0xFF (rare —
+    ;; FCB corruption or BIOS post-write disk error).
+    LD      DE, fcb_scratch
+    BDOS_CALL BDOS_CLOSE
+
+    ;; Step 9: clear the pre-staged banner pointer so a future
+    ;; unrelated BDOS error doesn't inherit this stale value.
+    ;; CRITICAL: only runs AFTER all BDOS calls succeed — any
+    ;; earlier failure JPs through the funnel and never reaches
+    ;; here, but the pre-stage stays correctly aimed for that
+    ;; failure path.
+    LD      HL, 0
+    LD      (bdos_error_pre_msg), HL
+
+    ;; Step 10: clear dirty flag. cursor_offset / gap_start /
+    ;; gap_end / filename_buffer are unchanged (the walk was
+    ;; read-only against the gap halves).
+    XOR     A
+    LD      (buffer_dirty), A
+
+    ;; Step 11: compose + emit "<FILENAME> N bytes written".
+    LD      BC, (fileio_write_count)
+    CALL    fileio_compose_written_status   ; HL = fileio_status_scratch
+    XOR     A                               ; non-error code (AR16)
+    JP      status_set_message              ; tail-JP
+
+
+;; ============================================================
+;; --- Internal helper: fileio_save_walk_bytes (Story 2.4) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; fileio_save_walk_bytes
+; Walk one gap half (src ptr, byte count) into the 128-byte DMA
+; buffer; flush a sector via fileio_save_flush_sector each time
+; the DMA fills. The dma_ptr / dma_remain cells track DMA state
+; across calls so the caller can compose multiple halves into
+; the same sector seamlessly.
+;
+; In:      HL = src ptr, BC = bytes remaining in this half
+;          (0..GAP_BUFFER_MAX — handles the empty-half case
+;          cleanly via the BC == 0 early RET).
+; Out:     dma state advanced past bytes copied; flushes triggered
+;          inline. RET.
+; Trashes: A, BC, DE, HL, F.
+; Calls:   fileio_save_flush_sector.
+; ----------------------------------------------------------------
+fileio_save_walk_bytes:
+.walk_loop:
+    LD      A, B
+    OR      C
+    RET     Z                               ; this half done
+    LD      A, (HL)
+    LD      DE, (fileio_save_dma_ptr)
+    LD      (DE), A
+    INC     DE
+    LD      (fileio_save_dma_ptr), DE
+    INC     HL
+    DEC     BC
+    LD      A, (fileio_save_dma_remain)
+    DEC     A
+    LD      (fileio_save_dma_remain), A
+    JR      NZ, .walk_loop                  ; DMA still has room
+    ;; DMA full — flush sector and continue. flush_sector resets
+    ;; dma_ptr / dma_remain to (DEFAULT_DMA, 128).
+    PUSH    HL
+    PUSH    BC
+    CALL    fileio_save_flush_sector
+    POP     BC
+    POP     HL
+    JR      .walk_loop
+
+
+;; ============================================================
+;; --- Internal helper: fileio_save_flush_sector (Story 2.4) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; fileio_save_flush_sector
+; Issue one BDOS_WRITE_SEQ and reset DMA state for the next sector.
+;
+; Failure-routing per AC6:
+;   - Sign-bit return (0xFF — rare; disk catastrophe class): the
+;     BDOS_CALL macro's JP M routes to bdos_error_funnel which
+;     surfaces the pre-staged "can't write FILENAME" banner.
+;   - Positive non-zero return (A = 1..127 — documented CP/M 2.2
+;     WRITE_SEQ errors: disk full, extent exhausted, write-protect
+;     surfacing mid-sequence): bit 7 clear, macro's JP M does
+;     NOT fire — we inspect A here and route to .write_abort,
+;     which re-stages bdos_error_pre_msg defensively and JPs
+;     to bdos_error_funnel.
+;
+; In:      (none — DMA buffer is full; fcb_scratch holds the FCB)
+; Out:     Success: dma_ptr / dma_remain reset to (DEFAULT_DMA, 128);
+;          RET.
+;          Failure: no return — JPs through bdos_error_funnel.
+; Trashes: A, BC, DE, HL, F.
+; Calls:   BDOS_CALL (BDOS_WRITE_SEQ), bdos_error_funnel (abort).
+; ----------------------------------------------------------------
+fileio_save_flush_sector:
+    LD      DE, fcb_scratch
+    BDOS_CALL BDOS_WRITE_SEQ                ; sign-bit -> funnel via macro
+    OR      A
+    JR      NZ, .write_abort                ; A = 1..127 -> non-sign-bit error
+    LD      HL, DEFAULT_DMA
+    LD      (fileio_save_dma_ptr), HL
+    LD      A, 128
+    LD      (fileio_save_dma_remain), A
+    RET
+.write_abort:
+    ;; Re-stage pre_msg defensively (it should still be set from
+    ;; fileio_save's Step 1; the re-stage is paranoid) and route
+    ;; to the funnel.
+    LD      HL, fileio_status_scratch
+    LD      (bdos_error_pre_msg), HL
+    JP      bdos_error_funnel
 
 
 ;; ============================================================
@@ -915,6 +1372,54 @@ fileio_compose_cant_open:
 
 
 ;; ============================================================
+;; --- Internal helper: fileio_compose_cant_write (Story 2.4) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; fileio_compose_cant_write
+; Build "can't write <filename>\0" in fileio_status_scratch.
+; Called BEFORE the BDOS write sequence (MAKE / WRITE_SEQ / CLOSE),
+; so on failure the funnel can surface the context-rich banner
+; via the bdos_error_pre_msg override.
+;
+; Structure mirrors fileio_compose_cant_open exactly — only the
+; prefix DEFB differs. AR16: "can't write " is 12 chars + NUL.
+; Max composed length 12 + 15 + 1 = 28 bytes; within the existing
+; 48-byte fileio_status_scratch budget.
+;
+; In:      (none — reads fileio_msg_cant_write_prefix + filename_buffer)
+; Out:     fileio_status_scratch contains the composed banner;
+;          HL = fileio_status_scratch (ready to load into
+;          bdos_error_pre_msg).
+; Trashes: A, BC, DE, HL, F.
+; ----------------------------------------------------------------
+fileio_compose_cant_write:
+    LD      HL, fileio_msg_cant_write_prefix
+    LD      DE, fileio_status_scratch
+.copy_prefix:
+    LD      A, (HL)
+    OR      A
+    JR      Z, .copy_filename
+    LD      (DE), A
+    INC     HL
+    INC     DE
+    JR      .copy_prefix
+.copy_filename:
+    LD      HL, filename_buffer
+.cf_loop:
+    LD      A, (HL)
+    LD      (DE), A
+    OR      A
+    JR      Z, .done                        ; copied NUL terminator
+    INC     HL
+    INC     DE
+    JR      .cf_loop
+.done:
+    LD      HL, fileio_status_scratch       ; HL = pre-stage pointer for caller
+    RET
+
+
+;; ============================================================
 ;; --- Internal helper: fileio_compose_loaded_status ---
 ;; ============================================================
 
@@ -922,12 +1427,57 @@ fileio_compose_cant_open:
 ; fileio_compose_loaded_status
 ; Build "<filename> <count> bytes\0" in fileio_status_scratch.
 ;
+; Story 2.4 refactor: this entry now loads its private suffix DEFB
+; into DE and JPs into the shared body fileio_compose_filename_count_suffix
+; (below), which Story 2.4's fileio_compose_written_status also
+; routes through with a " bytes written" suffix. The composed
+; output is byte-identical to the pre-refactor implementation —
+; Story 2.2's fileio_load tests are the regression net.
+;
 ; In:      BC = byte count (16-bit, 0..GAP_BUFFER_MAX)
 ; Out:     HL = fileio_status_scratch (ready for status_set_message)
 ; Trashes: A, BC, DE, HL, F.
 ; ----------------------------------------------------------------
 fileio_compose_loaded_status:
+    LD      DE, fileio_msg_bytes_suffix
+    JP      fileio_compose_filename_count_suffix
+
+
+; ----------------------------------------------------------------
+; fileio_compose_written_status (Story 2.4)
+; Build "<filename> <count> bytes written\0" in fileio_status_scratch.
+;
+; Routes through the shared body fileio_compose_filename_count_suffix
+; (below) with the " bytes written" suffix.
+;
+; In:      BC = byte count (16-bit, 0..GAP_BUFFER_MAX)
+; Out:     HL = fileio_status_scratch (ready for status_set_message)
+; Trashes: A, BC, DE, HL, F.
+; ----------------------------------------------------------------
+fileio_compose_written_status:
+    LD      DE, fileio_msg_bytes_written_suffix
+    JP      fileio_compose_filename_count_suffix
+
+
+; ----------------------------------------------------------------
+; fileio_compose_filename_count_suffix
+; Shared body for fileio_compose_loaded_status and the Story-2.4
+; fileio_compose_written_status. Composes
+; "<filename> <count><suffix>" in fileio_status_scratch, where
+; <suffix> is a caller-supplied NUL-terminated string passed in
+; DE (typically " bytes\0" or " bytes written\0").
+;
+; Capacity: filename (max 15) + space (1) + 5 decimal digits + 14
+; (" bytes written") + NUL (1) = 36 bytes max. Within the 48-byte
+; fileio_status_scratch budget.
+;
+; In:      BC = byte count, DE = NUL-terminated suffix ptr
+; Out:     HL = fileio_status_scratch (ready for status_set_message)
+; Trashes: A, BC, DE, HL, F.
+; ----------------------------------------------------------------
+fileio_compose_filename_count_suffix:
     PUSH    BC                              ; save byte count
+    PUSH    DE                              ; save suffix ptr
     LD      HL, filename_buffer
     LD      DE, fileio_status_scratch
 .copy_filename:
@@ -942,9 +1492,10 @@ fileio_compose_loaded_status:
     LD      A, ' '
     LD      (DE), A
     INC     DE
-    POP     HL                              ; HL = byte count
+    POP     HL                              ; HL = suffix ptr (saved)
+    EX      (SP), HL                        ; stack top = suffix ptr; HL = byte count
     CALL    fileio_u16_to_dec               ; advances DE past digits
-    LD      HL, .suffix
+    POP     HL                              ; HL = suffix ptr
 .copy_suffix:
     LD      A, (HL)
     LD      (DE), A
@@ -956,8 +1507,6 @@ fileio_compose_loaded_status:
 .done:
     LD      HL, fileio_status_scratch
     RET
-.suffix:
-    DEFB    " bytes", 0
 
 
 ;; ============================================================
@@ -1075,17 +1624,28 @@ fileio_abort_common:
 fcb_scratch:
     DEFS    36, 0
 
-; 48-byte holding area for dynamic status banners. Capacity check:
-; max content is filename_buffer (15) + " " (1) + 5 decimal digits
-; + " bytes" (6) + NUL (1) = 28 bytes; or "can't open " (11) +
-; filename (15) + NUL (1) = 27 bytes. 48 is generous; the ASSERT
-; pins the lower bound so a future stretch surfaces at build time.
+; 48-byte holding area for dynamic status banners. Capacity check
+; (Story 2.4 refresh — the written-status banner is now the largest):
+;   "<filename> N bytes written" = 15 + 1 + 5 + 14 + NUL = 36 bytes
+;   "can't write <filename>"     = 12 + 15 + NUL          = 28 bytes
+;   "<filename> N bytes"         = 15 + 1 + 5 + 6 + NUL   = 28 bytes
+;   "can't open <filename>"      = 11 + 15 + NUL          = 27 bytes
+;   "<filename> [new file]"      = 15 + 11 + NUL          = 27 bytes
+; 48 stays generous (max needed = 36); the ASSERT pins the lower
+; bound so a future banner stretch surfaces at build time.
 fileio_status_scratch:
     DEFS    48, 0
     ASSERT  $ - fileio_status_scratch >= 48
 
 fileio_msg_cant_open_prefix:
     DEFB    "can't open ", 0                ; 11 chars + NUL (AR16)
+
+; Story 2.4: "can't write " prefix used by fileio_compose_cant_write
+; to compose "can't write <filename>" into fileio_status_scratch.
+; Pre-staged in bdos_error_pre_msg before BDOS_MAKE / BDOS_WRITE_SEQ
+; / BDOS_CLOSE so the funnel can surface the context-rich banner.
+fileio_msg_cant_write_prefix:
+    DEFB    "can't write ", 0               ; 12 chars + NUL (AR16)
 
 ; Story 2.3: " [new file]" suffix appended to filename_buffer when
 ; vibe FILENAME launches with a not-yet-on-disk name. Composed
@@ -1094,8 +1654,34 @@ fileio_msg_cant_open_prefix:
 fileio_msg_new_file_suffix:
     DEFB    " [new file]", 0                ; 11 chars + NUL (AR16)
 
+; Story 2.4: suffixes consumed by fileio_compose_filename_count_suffix
+; (the shared body shared between fileio_compose_loaded_status and
+; fileio_compose_written_status). The decimal byte count is emitted
+; directly before the suffix; the suffix's leading space separates
+; the count from the trailing word.
+fileio_msg_bytes_suffix:
+    DEFB    " bytes", 0                     ; 6 chars + NUL (AR16)
+fileio_msg_bytes_written_suffix:
+    DEFB    " bytes written", 0             ; 14 chars + NUL (AR16)
+
 ; 16-bit scratch for fileio_u16_to_dec output-pointer marshalling.
 ; The trial-subtract loop uses DE for the divisor, so the dest
 ; pointer rides in this cell across the per-digit emit.
 fileio_dec_dest:
     DEFW    0
+
+; Story 2.4: total payload byte count computed at fileio_save's
+; Step 5 and consumed at Step 11 to seed fileio_compose_written_status.
+; Module-local — NOT in state.inc (internal save scratch).
+fileio_write_count:
+    DEFW    0
+
+; Story 2.4: DMA buffer write pointer and remaining-slot count
+; tracked across fileio_save_walk_bytes calls and BDOS_WRITE_SEQ
+; flushes. Init (DEFAULT_DMA, 128) at fileio_save entry; reset
+; same after every flush; left at the EOF-pad end-state when
+; fileio_save returns (subsequent fileio_save call re-inits).
+fileio_save_dma_ptr:
+    DEFW    0
+fileio_save_dma_remain:
+    DEFB    0

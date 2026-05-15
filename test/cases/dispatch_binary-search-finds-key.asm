@@ -157,9 +157,7 @@ test_handler_Z:
     LD      (TEST_CONTEXT), A
     RET
 ;; ----- LOCAL init_teardown stub (Story 2.3: exline.asm references init_teardown via cmd_quit) -----
-init_teardown:
-    RET
-
+    INCLUDE "../inc/test_teardown_stub.inc"
 test_unbound:
     LD      A, 0x66
     LD      (TEST_CONTEXT), A

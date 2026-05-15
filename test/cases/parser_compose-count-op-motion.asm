@@ -185,9 +185,7 @@ test_capture_flag:
     DEFB    0
 
 ;; ----- LOCAL init_teardown stub (Story 2.3) -----
-init_teardown:
-    RET
-
+    INCLUDE "../inc/test_teardown_stub.inc"
 ;; ----- test_pass / test_fail labels -----
     INCLUDE "../inc/test_epilogue.inc"
 

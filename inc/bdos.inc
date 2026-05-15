@@ -8,8 +8,9 @@
 ;
 ; Public:
 ;   Function numbers: BDOS_EXIT, BDOS_CONOUT, BDOS_OPEN,
-;                     BDOS_CLOSE, BDOS_DELETE, BDOS_READ_SEQ,
-;                     BDOS_WRITE_SEQ, BDOS_MAKE, BDOS_SET_DMA
+;                     BDOS_CLOSE, BDOS_SEARCH_FIRST, BDOS_DELETE,
+;                     BDOS_READ_SEQ, BDOS_WRITE_SEQ, BDOS_MAKE,
+;                     BDOS_SET_DMA
 ;   Macro:            BDOS_CALL
 ;
 ; State owned (read/write):
@@ -34,9 +35,10 @@
 ; failure codes from READ/WRITE_SEQ require a caller-side A check.
 BDOS_EXIT       EQU 0    ; system reset / warm-boot return to CCP
 BDOS_CONOUT     EQU 2    ; print byte in E — enumerated for AC2 completeness; console path uses BIOS-direct, do not call
-BDOS_OPEN       EQU 15   ; open file: DE = FCB; A = 0..3 ok / 0xFF fail
-BDOS_CLOSE      EQU 16   ; close file: DE = FCB; A = 0..3 ok / 0xFF fail
-BDOS_DELETE     EQU 19   ; delete file: DE = FCB; A = 0..3 ok / 0xFF fail
+BDOS_OPEN         EQU 15   ; open file: DE = FCB; A = 0..3 ok / 0xFF fail
+BDOS_CLOSE        EQU 16   ; close file: DE = FCB; A = 0..3 ok / 0xFF fail
+BDOS_SEARCH_FIRST EQU 17   ; search directory: DE = FCB (3Fh wildcards); A = 0..3 idx within current DMA / 0xFF no match
+BDOS_DELETE       EQU 19   ; delete file: DE = FCB; A = 0..3 ok / 0xFF fail
 BDOS_READ_SEQ   EQU 20   ; read sector to DMA: DE = FCB; A = 0 ok / 1 EOF
 BDOS_WRITE_SEQ  EQU 21   ; write sector from DMA: DE = FCB; A = 0 ok / 1+ err
 BDOS_MAKE       EQU 22   ; create file: DE = FCB; A = 0..3 ok / 0xFF fail
