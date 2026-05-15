@@ -18,13 +18,16 @@
 ;                                          ; then parser_clear
 ;            parser_clear                 ; reset all three fields
 ;
-;          Plus three Epic-1 placeholder stubs that surface
-;          msg_not_implemented while the real motion / doubled-op
-;          handlers wait for Epic 2 / 3 stories:
+;          Plus one Epic-1 placeholder stub that surfaces
+;          msg_not_implemented while the real doubled-op handler
+;          waits for Story 2.10:
 ;
-;            parser_motion_zero_stub      ; '0' as motion (FR21; Story 2.6)
 ;            parser_doubled_operator_stub ; dd/yy/cc/<<<>> (FR40; Story 2.10)
-;            parser_gg_motion_stub        ; gg motion (FR22; Story 2.6)
+;
+;          (Story 2.6 retired the leading-`0` and `gg` Epic-1
+;          placeholder stubs; the parser's leading-zero and
+;          doubled-g arms now JP motion_0 / motion_gg in
+;          src/motions.asm directly.)
 ;
 ;          Pure metadata module — no buffer mutation (AR14),
 ;          no screen emission (AR13), no raw BDOS (AR15). The
@@ -53,9 +56,7 @@
 ;   parser_handle_motion_prefix
 ;   parser_dispatch
 ;   parser_clear
-;   parser_motion_zero_stub
 ;   parser_doubled_operator_stub
-;   parser_gg_motion_stub
 ;
 ; State owned (read/write):
 ;   count_accumulator      ; 16-bit; writers = parser_handle_digit,
@@ -71,11 +72,11 @@
 ;   parser_handle_digit:          In:  A = digit char ('0'..'9')
 ;                                 Out: count_accumulator advanced
 ;                                      OR transferred control to
-;                                      parser_motion_zero_stub on
+;                                      motion_0 (src/motions.asm) on
 ;                                      leading-'0' with count == 0
 ;                                 Trashes: A, BC, DE, HL, F
-;                                 Calls:   parser_motion_zero_stub
-;                                          (only on leading-zero path)
+;                                 Calls:   motion_0 (only on leading-
+;                                          zero path; tail-JP)
 ;
 ;   parser_handle_operator:       In:  A = operator byte
 ;                                      ('d'/'y'/'c'/'>'/'<')
@@ -91,11 +92,12 @@
 ;                                      Epic 1 / 2)
 ;                                 Out: pending_motion_prefix set
 ;                                      (first) OR transferred control
-;                                      to parser_gg_motion_stub
-;                                      (doubled — stub tail-calls
+;                                      to motion_gg (src/motions.asm,
+;                                      doubled — motion_gg tail-JPs
 ;                                      parser_clear)
 ;                                 Trashes: A, BC, DE, HL, F
-;                                 Calls:   parser_gg_motion_stub
+;                                 Calls:   motion_gg (only on
+;                                          doubled-g path; tail-JP)
 ;
 ;   parser_dispatch:              In:  HL = motion handler address
 ;                                 Out: motion handler invoked once
@@ -119,31 +121,29 @@
 ;                                 Trashes: A, HL, F
 ;                                 Calls:   (none)
 ;
-;   Stub handlers (parser_motion_zero_stub,
-;   parser_doubled_operator_stub, parser_gg_motion_stub):
+;   Stub handler (parser_doubled_operator_stub):
 ;                                 In:  (none — A and HL freely
 ;                                      clobbered)
 ;                                 Out: status_buffer = "not yet
 ;                                      implemented"; status_dirty
-;                                      set. parser_motion_zero_stub
-;                                      does NOT clear parser state
-;                                      (leading-'0' has nothing to
-;                                      clear — see Dev Notes); the
-;                                      other two tail-JP to
-;                                      parser_clear (doubled-op and
-;                                      gg consume their entire
-;                                      pending-state).
+;                                      set. Tail-JPs to parser_clear
+;                                      (doubled-op consumes its
+;                                      entire pending-state).
 ;                                 Trashes: A, BC, DE, HL, F
 ;                                 Calls:   status_set_message;
-;                                          parser_clear (tail-call
-;                                          from doubled-op and gg
-;                                          stubs only)
+;                                          parser_clear (tail-call)
 ;
 ; Dependencies:
 ;   inc/state.inc    (count_accumulator, pending_operator,
 ;                     pending_motion_prefix)
 ;   src/statusln.asm (status_set_message + msg_not_implemented —
-;                     for the three Epic-1 stubs)
+;                     for parser_doubled_operator_stub)
+;   src/motions.asm  (motion_0, motion_gg — forward-referenced
+;                     from parser_handle_digit's leading-zero arm
+;                     and parser_handle_motion_prefix's doubled-g
+;                     arm; resolved by sjasmplus's two-pass model
+;                     because motions.asm INCLUDEs after parser.asm
+;                     in vibe.asm's AR25 chain)
 ; ============================================================
 
 ;; ============================================================
@@ -156,7 +156,7 @@
 ; status-line side effect, no other state touched. Called by:
 ;   - parser_dispatch (after motion handler returns)
 ;   - parser_doubled_operator_stub (tail-JP)
-;   - parser_gg_motion_stub (tail-JP)
+;   - every motion handler in src/motions.asm (tail-JP per Story 2.5 AC7)
 ;   - future Esc-from-NORMAL handler (Story 2.x) on count/op abort
 ;
 ; 4 bytes of state total: count_accumulator (2) + pending_operator
@@ -190,9 +190,9 @@ parser_clear:
 ; MC4 handler for ASCII digits '0'..'9'. Two cases:
 ;
 ;   - Leading '0' (count_accumulator == 0): transfer control to
-;     parser_motion_zero_stub. In vi, '0' with no pending count
-;     is the motion to line-start (FR21). Epic 1 surfaces the
-;     stub message; Story 2.6 lands the real motion.
+;     motion_0 (src/motions.asm; Story 2.6 retired the
+;     leading-zero Epic-1 placeholder). In vi, '0' with no
+;     pending count is the motion to line-start (FR21).
 ;
 ;   - Otherwise (non-zero digit, OR '0' arriving after a prior
 ;     digit): accumulate into count_accumulator as
@@ -213,9 +213,10 @@ parser_clear:
 ; In:      A = digit char ('0'..'9' = 0x30..0x39)
 ; Out:     count_accumulator advanced (HL := HL * 10 + digit);
 ;          pending_motion_prefix = 0; OR control transferred to
-;          parser_motion_zero_stub on leading-'0' with count == 0.
+;          motion_0 on leading-'0' with count == 0 (motion_0
+;          tail-JPs parser_clear).
 ; Trashes: A, BC, DE, HL, F
-; Calls:   parser_motion_zero_stub (only on leading-zero arm)
+; Calls:   motion_0 (only on leading-zero arm; tail-JP)
 ; ----------------------------------------------------------------
 parser_handle_digit:
     LD      C, A                    ; C = digit char (saved across
@@ -240,10 +241,12 @@ parser_handle_digit:
     OR      L                       ; Z iff HL == 0 (both bytes)
     JR      NZ, .accumulate
 
-    ;; Leading '0' with no count: motion-zero stub (FR21 / AC3).
+    ;; Leading '0' with no count: motion to line-start (FR21 / AC3).
     ;; count remains 0; pending_motion_prefix already cleared above;
-    ;; pending_operator preserved (vi: 'd0' = delete to line-start).
-    JP      parser_motion_zero_stub
+    ;; pending_operator preserved (vi: 'd0' = delete to line-start;
+    ;; Story 2.11 lands the real operator+motion compose). motion_0
+    ;; tail-JPs parser_clear so the pending operator drops.
+    JP      motion_0
 
 .accumulate:
     ;; HL = count_accumulator (loaded above). Compute HL * 10
@@ -351,10 +354,10 @@ parser_handle_operator:
 ;     vi composes the parser must not mangle).
 ;
 ;   - Doubled prefix (pending_motion_prefix == A): transfer
-;     control to parser_gg_motion_stub (Epic 1 placeholder for
-;     gg buffer-start motion; Story 2.6 lands real). The stub
-;     tail-JPs to parser_clear so all parser state is zeroed
-;     on return.
+;     control to motion_gg (src/motions.asm; Story 2.6 retired
+;     the gg Epic-1 placeholder). motion_gg reads
+;     count_accumulator before tail-JPing parser_clear so all
+;     parser state is zeroed on return.
 ;
 ; ASYMMETRY (critical — see module header): this routine does
 ; NOT clear pending_motion_prefix on entry. The doubled-prefix
@@ -365,11 +368,10 @@ parser_handle_operator:
 ;
 ; In:      A = prefix byte ('g' = 0x67 for Epic 1 / 2)
 ; Out:     pending_motion_prefix = A on the first-prefix path;
-;          control transferred to parser_gg_motion_stub on the
-;          doubled-prefix path.
-; Trashes: A, BC, DE, HL, F (doubled path inherits
-;          status_set_message and parser_clear clobbers)
-; Calls:   parser_gg_motion_stub (only on doubled path)
+;          control transferred to motion_gg on the doubled-prefix
+;          path (motion_gg tail-JPs parser_clear).
+; Trashes: A, BC, DE, HL, F
+; Calls:   motion_gg (only on doubled-g path; tail-JP)
 ; ----------------------------------------------------------------
 parser_handle_motion_prefix:
     LD      C, A                    ; C = prefix (saved across compare)
@@ -378,8 +380,9 @@ parser_handle_motion_prefix:
     LD      A, (pending_motion_prefix)
     CP      C
     JR      NZ, .first_prefix
-    ;; Doubled: tail-JP to gg stub (stub tail-JPs to parser_clear).
-    JP      parser_gg_motion_stub
+    ;; Doubled: tail-JP to motion_gg (motion_gg reads
+    ;; count_accumulator before its own tail-JP to parser_clear).
+    JP      motion_gg
 
 .first_prefix:
     ;; AC7: store prefix. count_accumulator and pending_operator
@@ -432,46 +435,13 @@ parser_dispatch:
 
 
 ;; ============================================================
-;; --- Epic-1 stub handlers ---
+;; --- Epic-1 stub handler ---
 ;; ============================================================
-; All three surface msg_not_implemented via the AR12 status
-; funnel. The two "command-complete" stubs (doubled-op and gg)
-; tail-JP to parser_clear so the entire pending-state is consumed.
-; The motion-zero stub does NOT clear: leading-'0' fires with
-; count_accumulator already 0 by precondition; pending_operator
-; and pending_motion_prefix may legitimately persist (vi: 'd0'
-; is "delete to line-start" — operator + motion compose, the
-; operator carries to the motion handler that the real Story 2.6
-; motion-0 will become). For Epic 1 the stub message is the only
-; observable effect.
-
-; ----------------------------------------------------------------
-; parser_motion_zero_stub
-; Epic 1 placeholder for the '0' line-start motion (FR21).
-; Story 2.6 replaces with the real motion handler.
-;
-; Reached via `JP parser_motion_zero_stub` from parser_handle_digit's
-; leading-zero arm (a tail-call), so this stub's RET returns to
-; *parser_handle_digit's caller*, not to parser_handle_digit. A
-; future maintainer wrapping the stub in `CALL` would unbalance the
-; stack — keep the `JP` at the caller and the bare `RET` here in
-; sync.
-;
-; Unlike the doubled-op and gg stubs, this one does NOT tail-JP to
-; parser_clear: leading-'0' fires with count==0 by precondition, and
-; pending_operator / pending_motion_prefix may legitimately persist
-; (vi 'd0' = delete-to-line-start).
-;
-; In:      (none — caller passed A = '0' but this stub ignores it)
-; Out:     status line = "not yet implemented"
-; Trashes: A, BC, DE, HL, F
-; Calls:   status_set_message
-; ----------------------------------------------------------------
-parser_motion_zero_stub:
-    LD      HL, msg_not_implemented
-    XOR     A
-    CALL    status_set_message
-    RET
+; Surfaces msg_not_implemented via the AR12 status funnel and
+; tail-JPs to parser_clear so the pending-state is consumed.
+; Story 2.10 will land the real doubled-operator handlers
+; (dd / yy / cc / >> / <<). Story 2.6 retired the leading-`0`
+; and `gg` Epic-1 sibling placeholders.
 
 ; ----------------------------------------------------------------
 ; parser_doubled_operator_stub
@@ -488,26 +458,6 @@ parser_motion_zero_stub:
 ; Calls:   status_set_message; parser_clear (tail-JP)
 ; ----------------------------------------------------------------
 parser_doubled_operator_stub:
-    LD      HL, msg_not_implemented
-    XOR     A
-    CALL    status_set_message
-    JP      parser_clear
-
-; ----------------------------------------------------------------
-; parser_gg_motion_stub
-; Epic 1 placeholder for the gg buffer-start motion (FR22).
-; Story 2.6 replaces with the real motion. Tail-JPs to
-; parser_clear (same atomic-dispatch shape as
-; parser_doubled_operator_stub).
-;
-; In:      (none)
-; Out:     status line = "not yet implemented";
-;          count_accumulator / pending_operator /
-;          pending_motion_prefix all = 0 (via parser_clear)
-; Trashes: A, BC, DE, HL, F
-; Calls:   status_set_message; parser_clear (tail-JP)
-; ----------------------------------------------------------------
-parser_gg_motion_stub:
     LD      HL, msg_not_implemented
     XOR     A
     CALL    status_set_message

@@ -62,8 +62,8 @@ push:
 sizes: build/vibe.lst
 	@awk '$$3 == "static_data_base" && $$4 == "EQU" { \
 	        size = strtonum("0x" $$2) - 256; \
-	        printf "code_section: %d bytes (~%d%% of NFR9 ~3 KB budget)\n", \
-	               size, size * 100 / 3072; \
+	        printf "code_section: %d bytes (~%d%% of NFR9 5 KB budget)\n", \
+	               size, size * 100 / 5120; \
 	        found = 1; \
 	        exit } \
 	    END { if (!found) { \

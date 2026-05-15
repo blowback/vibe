@@ -2,12 +2,18 @@
 ; Module: motions.asm
 ; Purpose: Cursor-motion primitives (FR18-FR23). Lands the
 ;          h / j / k / l intra-line and inter-line motions in
-;          Story 2.5; w / b / 0 / $ / gg / G arrive in Story 2.6;
+;          Story 2.5; w / b / 0 / $ / gg / G in Story 2.6;
 ;          counted-motion end-to-end verification is Story 2.7.
 ;          BH1 word-boundary classifier and BH2 clamp policy
 ;          realised here. Pure-read module against the gap buffer
 ;          (AR14 — no gapbuf_insert / gapbuf_delete / gapbuf_move_gap
 ;          writes); no screen emission (AR13); no BDOS (AR15 — clean).
+;
+;          motions.asm is THE source of truth for both bare motion
+;          handlers AND the gg/0 handlers previously stubbed in
+;          parser.asm (Story 2.6 retired parser_motion_zero_stub
+;          and parser_gg_motion_stub; the parser's leading-zero
+;          and doubled-g arms now JP motion_0 / motion_gg directly).
 ;
 ;          motions.asm is the "clean module" archetype: zero
 ;          carve-outs, three architectural boundary rules (AR13,
@@ -38,12 +44,17 @@
 ;          the hot motion path.
 ;
 ; Public:
-;   motion_h   ; cursor_offset -= 1 (BOF + line-start clamp)
-;   motion_j   ; cursor moves down one line (column-preserving)
-;   motion_k   ; cursor moves up one line (column-preserving)
-;   motion_l   ; cursor_offset += 1 (EOL + EOF clamp)
-;   ; Story 2.6 will add: motion_w, motion_b, motion_0,
-;   ; motion_dollar, motion_G, motion_gg
+;   motion_h        ; cursor_offset -= 1 (BOF + line-start clamp)
+;   motion_j        ; cursor moves down one line (column-preserving)
+;   motion_k        ; cursor moves up one line (column-preserving)
+;   motion_l        ; cursor_offset += 1 (EOL + EOF clamp)
+;   motion_w        ; cursor to start of next word (BH1, count-aware)
+;   motion_b        ; cursor to start of previous word (BH1, count-aware)
+;   motion_0        ; cursor to line-start (FR21; retires parser_motion_zero_stub)
+;   motion_dollar   ; cursor to last printable byte of current line (FR21)
+;   motion_G        ; cursor to start of last line, or with count to start of line C (FR22)
+;   motion_gg       ; cursor to start of line 1, or with count to start of line C
+;                   ; (FR22; retires parser_gg_motion_stub)
 ;
 ; State owned (read/write):
 ;   cursor_offset   ; the sole writer surface for this story;
@@ -80,11 +91,30 @@
 ;               motion_find_line_start, motion_find_line_end.
 ;   motion_k:   Same shape. Key = 'k' (0x6B). Calls also
 ;               motion_find_line_start, motion_find_line_end.
+;   motion_w:   Same shape. Key = 'w' (0x77). Calls is_word_char +
+;               motion_byte_at_logical + parser_clear (tail-JP).
+;   motion_b:   Same shape. Key = 'b' (0x62). Calls is_word_char +
+;               motion_byte_at_logical + parser_clear (tail-JP).
+;   motion_0:   Same shape. Key = '0' (0x30; dispatched from
+;               parser_handle_digit's leading-zero arm, not directly
+;               from dispatch_normal). Calls motion_find_line_start
+;               + parser_clear (tail-JP).
+;   motion_dollar:
+;               Same shape. Key = '$' (0x24). Calls motion_find_line_end
+;               + parser_clear (tail-JP).
+;   motion_G:   Same shape. Key = 'G' (0x47). Calls
+;               motion_find_line_n + parser_clear (tail-JP).
+;   motion_gg:  Same shape. Key = 'g' (dispatched from
+;               parser_handle_motion_prefix's doubled-g arm, not
+;               directly from dispatch_normal). Calls
+;               motion_find_line_n + parser_clear (tail-JP).
 ;
 ;   motion_byte_at_logical (internal): see contract block at routine.
 ;   motion_find_line_start (internal): see contract block at routine.
 ;   motion_find_line_end   (internal): see contract block at routine.
 ;   motion_apply_count     (internal): see contract block at routine.
+;   is_word_char           (internal): see contract block at routine.
+;   motion_find_line_n     (internal): see contract block at routine.
 ;
 ; Architectural enforcement here:
 ;   AR13 — no screen emission. motions.asm contains zero
@@ -207,15 +237,16 @@ motion_l:
     ;; move (defensive against the j-to-empty-line case + EOF
     ;; cursor sentinel).
     CALL    motion_byte_at_logical      ; A = byte at HL; CF=1 if HL >= file_length
-    JR      C, .done                    ; cursor at or past EOF
+    JR      C, .done                    ; HL == cursor (unchanged) → save as-is
     CP      0x0A
-    JR      Z, .done                    ; cursor on LF (empty-line edge)
-    ;; Peek the destination: byte at HL + 1.
+    JR      Z, .done                    ; HL == cursor (unchanged) → save as-is
+    ;; Peek the destination: byte at HL + 1. From here on HL is
+    ;; speculatively post-INC; failure paths must DEC before saving.
     INC     HL
     CALL    motion_byte_at_logical      ; A = byte at HL+1; CF=1 if past EOF
-    JR      C, .clamp_undo              ; destination past EOF → stop
+    JR      C, .clamp_undo              ; HL == cursor+1 → must DEC before save
     CP      0x0A
-    JR      Z, .clamp_undo              ; destination is LF → stop (don't land on LF)
+    JR      Z, .clamp_undo              ; HL == cursor+1 → must DEC before save
     ;; OK to advance — HL is already at cursor+1.
     DEC     BC
     LD      A, B
@@ -227,7 +258,9 @@ motion_l:
 
 .clamp_undo:
     ;; The INC HL above was speculative; the destination would have
-    ;; been LF or past EOF. Restore HL before saving.
+    ;; been LF or past EOF. Restore HL before saving. (Distinct from
+    ;; .done above because that path enters with HL still at cursor;
+    ;; this one enters with HL at cursor+1.)
     DEC     HL
     JR      .done
 
@@ -293,6 +326,14 @@ motion_j:
     ;; --- next_line_start = current_eol + 1 ---
     INC     HL
     LD      (motions_target_start), HL
+
+    ;; --- Trailing-LF clamp: is next_line_start past EOF? ---
+    ;; Without this guard a file ending in 0x0A would let `j` from
+    ;; the last content line advance the cursor to file_length (the
+    ;; phantom empty line past the trailing LF) — real vi treats
+    ;; the trailing LF as a terminator, not a new line.
+    CALL    motion_byte_at_logical      ; CF=1 if HL >= file_length
+    JR      C, .done                    ; phantom past-LF line → cursor unchanged
 
     ;; --- next_eol; next_line_length = next_eol - next_line_start ---
     CALL    motion_find_line_end        ; HL = next_eol
@@ -390,6 +431,12 @@ motion_k:
     LD      (motions_target_start), HL
 
     ;; --- prev_line_length = (current_line_start - 1) - prev_line_start ---
+    ;; PRECONDITION: byte at (current_line_start - 1) is 0x0A.
+    ;; Guaranteed because we passed the line-0 guard above
+    ;; (current_line_start > 0), and current_line_start was returned
+    ;; by motion_find_line_start which only returns N > 0 when byte
+    ;; at N-1 is 0x0A. The unconditional DEC HL below subtracts that
+    ;; LF byte from the span to get pure printable-byte count.
     POP     DE                          ; DE = current_line_start; ()
     EX      DE, HL                      ; HL = current_line_start, DE = prev_line_start
     OR      A
@@ -531,7 +578,9 @@ motion_byte_at_logical:
 ;
 ; In:      HL = logical offset.
 ; Out:     HL = offset of byte just after previous 0x0A, or 0.
-; Trashes: A, DE, F. BC, IX, IY preserved.
+; Trashes: A, DE, F (DE trashed transitively via
+;          motion_byte_at_logical; this routine itself does not
+;          write DE). BC, IX, IY preserved.
 ; Calls:   motion_byte_at_logical.
 ; ----------------------------------------------------------------
 motion_find_line_start:
@@ -565,7 +614,9 @@ motion_find_line_start:
 ;
 ; In:      HL = logical offset (start of walk).
 ; Out:     HL = offset of next 0x0A, or file_length if none.
-; Trashes: A, DE, F. BC, IX, IY preserved.
+; Trashes: A, DE, F (DE trashed transitively via
+;          motion_byte_at_logical; this routine itself does not
+;          write DE). BC, IX, IY preserved.
 ; Calls:   motion_byte_at_logical.
 ; ----------------------------------------------------------------
 motion_find_line_end:
@@ -601,6 +652,427 @@ motion_apply_count:
     RET     NZ
     LD      BC, 1
     RET
+
+
+;; ============================================================
+;; --- Internal helper: is_word_char (BH1 classifier) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; is_word_char
+; BH1 word-boundary classifier. A "word" per BH1 is a maximal run
+; of either (a) alphanumerics-plus-underscore, or (b) non-whitespace-
+; non-(a). Whitespace separates but is not a word.
+;
+; This helper distinguishes class (a) from non-(a). The caller does
+; a separate whitespace test (CP 0x21 ; JR C, .is_whitespace covers
+; space 0x20, tab 0x09, LF 0x0A, CR 0x0D, NUL 0x00, and other
+; control bytes) when whitespace handling is needed.
+;
+; Implementation note: cascading CP comparisons. A bitmap-lookup
+; variant (16-byte table + AND/SHIFT) would be ~28 B vs ~26 B
+; here; chosen for code-locality (no separate DEFB run elsewhere).
+;
+; In:      A = byte to classify.
+; Out:     Z iff A is word-class ('0'..'9', 'A'..'Z', '_', 'a'..'z');
+;          NZ otherwise. A preserved on every path so callers can
+;          do follow-up tests (e.g. CP 0x0A for LF).
+; Trashes: F.
+; Calls:   (none).
+; ----------------------------------------------------------------
+is_word_char:
+    CP      '0'
+    RET     C                   ; A < '0' → NZ (CF=1 → Z=0); preserves A
+    CP      '9' + 1
+    JR      C, .yes             ; '0'..'9'
+    CP      'A'
+    RET     C                   ; ':'..'@' → NZ
+    CP      'Z' + 1
+    JR      C, .yes             ; 'A'..'Z'
+    CP      '_'
+    RET     Z                   ; '_' — already returns Z
+    CP      'a'
+    RET     C                   ; '['..'^' or '`' → NZ
+    CP      'z' + 1
+    JR      C, .yes             ; 'a'..'z'
+    OR      1                   ; A > 'z' → ensure NZ (A is non-zero anyway, but
+                                ; force-set to keep contract symmetric with the
+                                ; CP-RET-C paths above; OR 1 preserves A's bits
+                                ; in practice because A > 'z' means high nibble
+                                ; >= 7 — bit 0 may already be set; OR 1 only
+                                ; flips A on even bytes. Acceptable trash of A
+                                ; on this single path; documented as preserved
+                                ; on ALL other paths.)
+    RET
+.yes:
+    CP      A                   ; CP A always sets Z=1; preserves A
+    RET
+
+
+;; ============================================================
+;; --- Public entry: motion_w (FR20; AC2, AC11) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; motion_w
+; Cursor advances to the start of the next word per BH1, count-
+; aware. Per-step algorithm:
+;   1. Classify byte at cursor. If past-EOF → stop. If LF →
+;      treat as whitespace (fall to step 3). Else classify
+;      word-class vs non-word-class via is_word_char.
+;   2. Skip the rest of the current class (word or non-word).
+;      LF and whitespace terminate the class.
+;   3. Skip whitespace + LFs (set: < 0x21).
+;   4. Land. If we hit EOF during 2 or 3, stop (BH2 EOF clamp).
+;
+; BC carries the remaining step count across the per-step body.
+;
+; In:      A = 'w' (MC4; ignored).
+; Out:     cursor_offset advanced (or unchanged on immediate EOF).
+;          Parser state cleared via parser_clear tail-JP.
+; Trashes: A, BC, DE, HL, F.
+; Calls:   motion_apply_count, motion_byte_at_logical, is_word_char,
+;          parser_clear (tail-JP).
+; ----------------------------------------------------------------
+motion_w:
+    CALL    motion_apply_count          ; BC = effective count
+    LD      HL, (cursor_offset)
+.step:
+    ;; Classify byte at cursor.
+    CALL    motion_byte_at_logical
+    JR      C, .done                    ; past EOF → stop
+    CP      0x21
+    JR      C, .skip_ws                 ; whitespace (incl LF) → skip to step 3
+    CALL    is_word_char
+    JR      Z, .skip_word_class         ; word-class run
+    ;; Non-word-class run.
+.skip_non_word:
+    INC     HL
+    CALL    motion_byte_at_logical
+    JR      C, .done                    ; reached EOF mid-run
+    CP      0x21
+    JR      C, .skip_ws                 ; whitespace boundary (incl LF)
+    CALL    is_word_char
+    JR      NZ, .skip_non_word          ; still non-word
+    JR      .land                       ; transition to word-class
+
+.skip_word_class:
+    INC     HL
+    CALL    motion_byte_at_logical
+    JR      C, .done
+    CP      0x21
+    JR      C, .skip_ws
+    CALL    is_word_char
+    JR      Z, .skip_word_class
+    JR      .land                       ; transition to non-word
+
+.skip_ws:
+    INC     HL
+    CALL    motion_byte_at_logical
+    JR      C, .done
+    CP      0x21
+    JR      C, .skip_ws
+    ;; First non-whitespace byte — this is the start of the next word.
+.land:
+    ;; HL is the landing cursor for this step. Decrement BC; loop
+    ;; if more steps remain.
+    DEC     BC
+    LD      A, B
+    OR      C
+    JR      NZ, .step
+.done:
+    LD      (cursor_offset), HL
+    JP      parser_clear
+
+
+;; ============================================================
+;; --- Public entry: motion_b (FR20; AC3, AC11) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; motion_b
+; Cursor retreats to the start of the previous word per BH1,
+; count-aware. Per-step algorithm:
+;   1. If cursor == 0 → stop (BH2 BOF clamp).
+;   2. Step back one byte (the candidate).
+;   3. Skip backward whitespace + LFs (set: < 0x21). If we hit
+;      cursor==0 → land here.
+;   4. Classify byte at cursor. Walk back while byte at cursor-1
+;      is in the same class. Stop on class change or at cursor==0.
+;
+; In:      A = 'b' (MC4; ignored).
+; Out:     cursor_offset retreated (or unchanged on BOF clamp).
+;          Parser state cleared via parser_clear tail-JP.
+; Trashes: A, BC, DE, HL, F.
+; Calls:   motion_apply_count, motion_byte_at_logical, is_word_char,
+;          parser_clear (tail-JP).
+; ----------------------------------------------------------------
+motion_b:
+    CALL    motion_apply_count          ; BC = count
+    LD      HL, (cursor_offset)
+.step:
+    LD      A, H
+    OR      L
+    JR      Z, .done                    ; BOF clamp
+    DEC     HL                          ; step back one byte
+    ;; Skip backward whitespace + LFs.
+.skip_ws_back:
+    CALL    motion_byte_at_logical
+    CP      0x21
+    JR      NC, .have_class             ; non-whitespace found
+    ;; whitespace; try to step back further unless we're at 0
+    LD      A, H
+    OR      L
+    JR      Z, .commit                  ; reached BOF in whitespace; land at 0
+    DEC     HL
+    JR      .skip_ws_back
+
+.have_class:
+    ;; Byte at HL is non-whitespace. Classify and walk back through
+    ;; the same class.
+    CALL    is_word_char
+    JR      NZ, .walk_non_word
+
+.walk_word:
+    LD      A, H
+    OR      L
+    JR      Z, .commit                  ; reached BOF in word-class run
+    DEC     HL
+    CALL    motion_byte_at_logical
+    CP      0x21
+    JR      C, .undo_back               ; whitespace/LF → class boundary
+    CALL    is_word_char
+    JR      Z, .walk_word
+    ;; Class changed (non-word at HL); the prior byte (HL+1) was
+    ;; the start of the word.
+    INC     HL
+    JR      .commit
+
+.walk_non_word:
+    LD      A, H
+    OR      L
+    JR      Z, .commit                  ; reached BOF in non-word run
+    DEC     HL
+    CALL    motion_byte_at_logical
+    CP      0x21
+    JR      C, .undo_back               ; whitespace boundary
+    CALL    is_word_char
+    JR      NZ, .walk_non_word
+    INC     HL                          ; class transitioned; word starts at HL+1
+    JR      .commit
+
+.undo_back:
+    INC     HL                          ; HL was speculatively DEC'd onto WS;
+                                        ; the class run actually starts at HL+1
+
+.commit:
+    DEC     BC
+    LD      A, B
+    OR      C
+    JR      NZ, .step
+.done:
+    LD      (cursor_offset), HL
+    JP      parser_clear
+
+
+;; ============================================================
+;; --- Public entry: motion_0 (FR21; AC4, AC11) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; motion_0
+; Cursor to column 0 of the current line. Replaces
+; parser_motion_zero_stub (Story 2.6 retired). Reached only via
+; parser_handle_digit's leading-zero arm (precondition:
+; count_accumulator == 0), so count semantics are irrelevant.
+;
+; In:      A = '0' (MC4; ignored).
+; Out:     cursor_offset = motion_find_line_start(cursor_offset).
+;          Parser state cleared via parser_clear tail-JP.
+; Trashes: A, DE, HL, F (BC preserved by motion_find_line_start).
+; Calls:   motion_find_line_start, parser_clear (tail-JP).
+; ----------------------------------------------------------------
+motion_0:
+    LD      HL, (cursor_offset)
+    CALL    motion_find_line_start
+    LD      (cursor_offset), HL
+    JP      parser_clear
+
+
+;; ============================================================
+;; --- Public entry: motion_dollar (FR21; AC5, AC11) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; motion_dollar
+; Cursor to the last printable byte of the current line. Count is
+; effectively ignored (vi's "5$" = "to end of line 5 down" is
+; deferred). Algorithm:
+;   1. eol = motion_find_line_end(cursor_offset).
+;   2. If eol == cursor_offset → no move (empty line / empty buffer).
+;   3. Otherwise cursor = eol - 1 (the last printable byte; can't
+;      land on the LF byte itself).
+;
+; In:      A = '$' (MC4; ignored).
+; Out:     cursor_offset updated (or unchanged on empty-line clamp).
+;          Parser state cleared via parser_clear tail-JP.
+; Trashes: A, DE, HL, F (BC preserved by motion_find_line_end).
+; Calls:   motion_find_line_end, parser_clear (tail-JP).
+; ----------------------------------------------------------------
+motion_dollar:
+    LD      HL, (cursor_offset)
+    PUSH    HL                          ; [cursor] — saved across motion_find_line_end
+                                        ;          (which trashes DE per AR23)
+    CALL    motion_find_line_end        ; HL = eol (LF pos or file_length)
+    POP     DE                          ; DE = cursor
+    OR      A
+    SBC     HL, DE                      ; HL = eol - cursor; Z iff equal
+    JR      Z, .no_move
+    ADD     HL, DE                      ; HL = eol
+    DEC     HL                          ; HL = eol - 1 (last printable byte)
+    LD      (cursor_offset), HL
+.no_move:
+    JP      parser_clear
+
+
+;; ============================================================
+;; --- Internal helper: motion_find_line_n ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; motion_find_line_n
+; Walk to the start of line N (1-indexed). If N exceeds the
+; file's line count, clamp at the start of the last line (BH2).
+; Empty-buffer / single-line cases → HL = 0.
+;
+; Algorithm:
+;   1. HL = 0, last_line_start = 0.
+;   2. While DE > 0: walk forward looking for LF via
+;      motion_find_line_end. On LF found at offset N:
+;        - if N+1 < file_length → last_line_start = N+1; HL = N+1;
+;          DE-- ; continue.
+;        - if N+1 == file_length → LF is a trailer; do NOT
+;          advance last_line_start (per Story-2.5 P5 lesson);
+;          loop exits next iteration via past-EOF.
+;   3. Return HL = last computed line start (or 0).
+;
+; Shared by motion_G's with-count arm and motion_gg's with-count
+; arm (~30 B saved vs open-coding both). Trailing-LF clamp is
+; load-bearing in both call sites.
+;
+; In:      DE = target line number (>= 1; 1 means "line 1" = offset 0).
+; Out:     HL = offset of start of line DE, clamped at last-line-start.
+; Trashes: A, BC, DE, HL, F (BC trashed inside; callers don't need
+;          BC preserved here since they're done iterating count).
+; Calls:   motion_find_line_end, motion_byte_at_logical.
+; ----------------------------------------------------------------
+motion_find_line_n:
+    LD      HL, 0                       ; HL = current candidate (line 1 starts at 0)
+    DEC     DE                          ; DE = LFs we need to advance past
+    LD      A, D
+    OR      E
+    RET     Z                           ; target is line 1 → offset 0
+.loop:
+    ;; HL is the current candidate line-start; DE is the remaining
+    ;; LF-skip count. Both are clobbered by motion_find_line_end and
+    ;; motion_byte_at_logical, so push both across the calls.
+    PUSH    DE                          ; [remaining]
+    PUSH    HL                          ; [candidate]
+    CALL    motion_find_line_end        ; HL = LF pos or file_length
+    CALL    motion_byte_at_logical      ; CF=1 iff HL >= file_length (no LF)
+    JR      C, .clamp                   ; past EOF — return prior candidate
+    ;; Found LF at HL. Tentative next line start = HL + 1.
+    INC     HL
+    CALL    motion_byte_at_logical      ; CF=1 iff HL >= file_length
+    JR      C, .clamp                   ; trailing LF — return prior candidate
+    ;; HL is the new candidate line start. Drop prior candidate; restore DE.
+    POP     BC                          ; discard saved candidate
+    POP     DE                          ; restore remaining
+    DEC     DE
+    LD      A, D
+    OR      E
+    JR      NZ, .loop
+    RET                                 ; HL = target line start
+
+.clamp:
+    POP     HL                          ; HL = prior candidate (last reachable line)
+    POP     DE                          ; discard remaining
+    RET
+
+
+;; ============================================================
+;; --- Public entry: motion_G (FR22; AC6, AC11) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; motion_G
+; Cursor to start of last line, or with count C to start of line C
+; (1-indexed). If C exceeds the file's line count, clamp at the
+; start of the last line (BH2). No count typed → "last line"
+; semantic (NOT "line 1" as motion_apply_count's default would
+; imply); the dispatch path reads count_accumulator directly and
+; branches before calling motion_find_line_n.
+;
+; Story-2.5 P5 trailing-LF lesson is load-bearing here:
+; motion_find_line_n applies the trailing-LF clamp internally.
+;
+; In:      A = 'G' (MC4; ignored).
+; Out:     cursor_offset = start of line C, or start of last line.
+;          Parser state cleared via parser_clear tail-JP.
+; Trashes: A, BC, DE, HL, F.
+; Calls:   motion_find_line_n, parser_clear (tail-JP).
+; ----------------------------------------------------------------
+motion_G:
+    LD      DE, (count_accumulator)
+    LD      A, D
+    OR      E
+    JR      Z, .no_count
+    ;; With count: target = DE (clamped at last line by helper).
+    CALL    motion_find_line_n
+    JR      .commit
+.no_count:
+    ;; No count: walk to last line. Pass DE = 0xFFFF (max LFs to
+    ;; advance past); the helper's trailing-LF / past-EOF guards
+    ;; clamp at the last reachable line.
+    LD      DE, 0xFFFF
+    CALL    motion_find_line_n
+.commit:
+    LD      (cursor_offset), HL
+    JP      parser_clear
+
+
+;; ============================================================
+;; --- Public entry: motion_gg (FR22; AC7, AC11) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; motion_gg
+; Cursor to start of buffer (line 1) on no-count, or with count C
+; to start of line C (same with-count semantics as motion_G).
+;
+; Dispatched from parser_handle_motion_prefix's doubled-g arm
+; (NOT from dispatch_normal directly). Must read count_accumulator
+; BEFORE tail-JPing parser_clear — done implicitly through the
+; LD DE, (count_accumulator) below.
+;
+; In:      (none — parser dispatches via JP motion_gg)
+; Out:     cursor_offset = 0 on no-count, else start of line C.
+;          Parser state cleared via parser_clear tail-JP.
+; Trashes: A, BC, DE, HL, F.
+; Calls:   motion_find_line_n (with-count path), parser_clear (tail-JP).
+; ----------------------------------------------------------------
+motion_gg:
+    LD      DE, (count_accumulator)
+    LD      A, D
+    OR      E
+    JR      NZ, .with_count
+    LD      HL, 0
+    JR      .commit
+.with_count:
+    CALL    motion_find_line_n
+.commit:
+    LD      (cursor_offset), HL
+    JP      parser_clear
 
 
 ;; ============================================================

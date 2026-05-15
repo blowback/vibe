@@ -30,12 +30,14 @@
 ;   0xE7 — 'g' then '0' left pending_motion_prefix nonzero (the
 ;          leading-zero arm of parser_handle_digit must also clear
 ;          the prefix — guards against a refactor that moves the
-;          XOR A clear below the JP parser_motion_zero_stub branch)
-;   0xE8 — 'g' then '0' did not fire parser_motion_zero_stub
-;          (status_dirty stayed 0 — the leading-zero motion path
-;          should have set it via status_set_message)
+;          XOR A clear below the JP motion_0 branch)
+;   0xE8 — 'g' then '0' did not fire motion_0 (cursor_offset did
+;          not move to 0 — Story 2.6 swap: was "status_dirty stayed 0"
+;          pre-Story-2.6 when parser_motion_zero_stub set status_dirty
+;          via status_set_message; motion_0 has no such side-effect
+;          so we observe its cursor write instead).
 ;   0xE9 — 'g' then '0' modified count_accumulator (the leading-
-;          zero stub must not touch count, which was 0 here)
+;          zero arm must not touch count, which was 0 here)
 ;   B    — diagnostic byte
 ; ============================================================
 
@@ -141,8 +143,23 @@
     ;; Subtest 4: 'g' then '0' — the leading-zero arm of
     ;; parser_handle_digit must also clear the prefix. The AC11
     ;; clear-on-entry runs BEFORE the AC3 branch decision; a
-    ;; refactor that moved the XOR A below the JP parser_motion_zero_stub
+    ;; refactor that moved the XOR A below the JP motion_0
     ;; would silently break gg detection after stale-g + leading-0.
+    ;;
+    ;; Story 2.6: pre-seed cursor=3 in a single-line buffer so we
+    ;; can observe motion_0 firing (cursor → 0) as the replacement
+    ;; for the pre-2.6 stub's status_dirty side-effect.
+    CALL    gapbuf_init
+    LD      HL, .payload
+    LD      DE, GAP_BUFFER_BASE
+    LD      BC, 5
+    LDIR
+    LD      HL, GAP_BUFFER_BASE + 5
+    LD      (gap_start), HL             ; 5-byte payload "hello"
+
+    LD      HL, 3
+    LD      (cursor_offset), HL         ; cursor mid-word
+
     LD      HL, 0
     LD      (count_accumulator), HL
     XOR     A
@@ -162,9 +179,11 @@
     LD      A, 0xE7
     JP      test_fail
 .ok4a:
-    LD      A, (status_dirty)
-    OR      A
-    JR      NZ, .ok4b
+    LD      HL, (cursor_offset)
+    LD      A, H
+    OR      L
+    JR      Z, .ok4b
+    LD      A, L
     LD      B, A
     LD      A, 0xE8
     JP      test_fail
@@ -180,6 +199,9 @@
 
     JP      test_pass
 
+.payload:
+    DEFB    "hello"
+
 ;; ----- LOCAL init_teardown stub (Story 2.3) -----
     INCLUDE "../inc/test_teardown_stub.inc"
 ;; ----- test_pass / test_fail labels -----
@@ -190,6 +212,7 @@
     INCLUDE "../../src/render.asm"
     INCLUDE "../../src/dispatch.asm"
     INCLUDE "../../src/parser.asm"
+    INCLUDE "../../src/motions.asm"     ; Story 2.5: dispatch_normal forward-references motion_h/j/k/l
     INCLUDE "../../src/gapbuf.asm"
     INCLUDE "../../src/exline.asm"
     INCLUDE "../../src/fileio.asm"

@@ -1,0 +1,11 @@
+
+ mm    mm   mmmmmm   mmmmmm    mmmmmmmm
+ "##  ##"   ""##""   ##""""##  ##""""""
+  ##  ##      ##     ##    ##  ##
+  ##  ##      ##     #######   #######
+   ####       ##     ##    ##  ##
+   ####     mm##mm   ##mmmm##  ##mmmmmm
+   """"     """"""   """""""   """"""""
+
+          Vi-like Beast Editor
+            (c) 2026 ant.org

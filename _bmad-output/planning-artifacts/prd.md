@@ -845,10 +845,17 @@ others are explicitly listed as not applicable.
 
 ### Resource Consumption
 
-- **NFR9: Code size budget.** Tentative ceiling: ~3 KB of Z80 code.
-  Significant overruns (≥ ~25%) trigger redesign rather than budget
-  inflation; safety paths (NFR5–NFR8) are exempt — accept overruns
-  rather than skip safety.
+- **NFR9: Code size budget.** Ceiling: 5120 bytes (5 KB) of Z80 code
+  (amended 2026-05-15 from the original 3072 B / ~3 KB target after
+  Stories 2.2-2.5 fileio + motions footprint showed the 3 KB target
+  was set pre-fileio and pre-motions implementation). The amended
+  ceiling preserves the original spirit (small editor fits MicroBeast's
+  tight TPA pressure) while accommodating realistic per-feature
+  footprint. Stories 2.6-2.13 monitor against this ceiling; further
+  amends require an explicit retro review. Safety paths (NFR5-NFR8,
+  FR51 oversize-refusal, FR52 buffer-dirty preservation, BH2 clamps)
+  are exempt from byte-shaving pressure — accept overruns rather
+  than skip safety.
 - **NFR10: TPA fit.** Total static footprint (code + data + screen
   shadow + undo buffer + gap buffer) fits within the TPA
   (`0x0100..0xD7FF`, ~54 KB).

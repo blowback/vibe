@@ -44,7 +44,7 @@ The NFRs are dominated by three load-bearing contracts:
   Esc-disambiguation budget. Each requires specific architectural
   mechanism (shadow buffer, input-loop discipline, tick-driven
   timeout).
-- **Resource Consumption (NFR9–NFR12):** ~3 KB tentative code budget,
+- **Resource Consumption (NFR9–NFR12):** 5 KB code budget (amended 2026-05-15 from 3 KB tentative),
   TPA fit, single .COM artifact, static allocation only. The budget is
   intuition-not-cap; safety overrides it.
 
@@ -197,7 +197,7 @@ A from-scratch skeleton is the right answer because:
 2. **NFR18 demands reproducible builds.** Adopting an unaudited
    skeleton risks importing timestamp / host-path leakage that would
    then need to be rooted out.
-3. **The ~3 KB code budget (NFR9) and crash-free contract (NFR5)
+3. **The 5 KB code budget (NFR9, amended 2026-05-15 from 3 KB) and crash-free contract (NFR5)
    make the project-shape itself architectural.** Where files split,
    how includes are organized, and how the Makefile drives sjasmplus
    are not generic concerns — they flow from the pre-pinned module
@@ -302,7 +302,7 @@ files is intentional: each module owns one cross-cutting concern, and
   embedding). Per NFR18 the build is byte-identical from a clean
   tree.
 - Listing and symbol files emitted into a non-tracked location for
-  size auditing against the ~3 KB budget.
+  size auditing against the 5 KB budget (NFR9, amended 2026-05-15).
 
 **Testing Framework:**
 
@@ -732,7 +732,7 @@ iz-cpm's drive-mount mechanism is used to expose the directory.
 **Code-budget reclamation from MC3.** The binary-search dispatch
 choice drops total dispatch-table footprint from ~2 KB (flat
 256-entry × 4 modes) to ~180 B (sparse sorted × 4 modes), reclaiming
-~1.8 KB into the ~3 KB code envelope. The shared `dispatch_key`
+~1.8 KB into the 5 KB code envelope (NFR9). The shared `dispatch_key`
 routine adds ~30 B. Net reclamation ≈ 1.77 KB — meaningful headroom
 for safety paths NFR9 already exempts, plus per-handler defensive
 checks.
@@ -1436,6 +1436,10 @@ tier additions (multi-level undo, marks, macros) will accrete.
 - `gapbuf.asm` is the single owner of buffer mutations. Motions,
   edits, visual, search, fileio all read; only edits/visual/fileio
   write — and only via `gapbuf_insert/delete/move_gap` entry points.
+  **Documented carve-out:** `fileio.asm`'s file-load linear-fill phase
+  writes `gap_start` directly to drop loaded bytes contiguously before
+  the gap (Story 2.2); `gapbuf_move_gap(0)` restores the cursor-at-0
+  invariant immediately after. One AR14 carve-out total.
 - `statusln.asm` is the single error sink (MC5). No module emits to
   the status row directly; all error/info paths funnel through
   `status_set_message`.
@@ -1445,7 +1449,15 @@ tier additions (multi-level undo, marks, macros) will accrete.
   itself as the first step of cold-start, so `init.asm` no longer
   needs a CONOUT exception.)
 - `bdos.inc`'s `BDOS_CALL` macro is the single BDOS gateway (MC6).
-  Raw `CALL 0x0005` is forbidden by convention.
+  Raw `CALL 0x0005` is forbidden by convention. **Documented carve-outs:**
+  `fileio.asm` has three inline-BDOS sites that bypass the macro funnel
+  because the funnel's terminal `JP input_loop` would skip required
+  follow-up (cold-start completion in Story 2.3's launch open; the
+  Story 2.4 save's benign 0xFF "no prior file" on DELETE; the Story
+  2.4-fix R/O save-precheck SEARCH_FIRST). Three AR15 carve-outs total,
+  all annotated in fileio.asm. `motions.asm` (Stories 2.5-2.6) is the
+  first "clean module" archetype in `src/`: zero AR13 / AR14 / AR15
+  carve-outs.
 - `dispatch.asm` is the only module with knowledge of per-mode key
   tables; mode dispatch is invisible to handlers themselves.
 

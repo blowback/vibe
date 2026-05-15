@@ -126,6 +126,7 @@
     INCLUDE "../../src/render.asm"
     INCLUDE "../../src/dispatch.asm"
     INCLUDE "../../src/parser.asm"
+    INCLUDE "../../src/motions.asm"     ; Story 2.5: dispatch_normal forward-references motion_h/j/k/l
     INCLUDE "../../src/exline.asm"
     INCLUDE "../../src/fileio.asm"
 

@@ -3,23 +3,27 @@
 ; Purpose: AC7, AC8 — verify parser_handle_motion_prefix:
 ;            - First 'g' (no prior prefix) sets
 ;              pending_motion_prefix = 'g'. count_accumulator
-;              and pending_operator unchanged. No stub fires.
+;              and pending_operator unchanged. No handler fires.
 ;            - Second 'g' (pending_motion_prefix already 'g')
-;              dispatches parser_gg_motion_stub, which tail-JPs
-;              to parser_clear: all three parser-state fields
-;              are 0 afterward, status_dirty is set.
+;              dispatches motion_gg (Story 2.6 — replaced the
+;              parser_gg_motion_stub). motion_gg with no count
+;              moves cursor to 0 and tail-JPs parser_clear:
+;              all three parser-state fields are 0 afterward,
+;              cursor_offset == 0.
 ;            - Count carries across the prefix: '5g' leaves
 ;              count_accumulator = 5 AND pending_motion_prefix
-;              = 'g'; the subsequent 'g' (doubled) fires the
-;              stub + parser_clear and count goes back to 0.
+;              = 'g'; the subsequent 'g' (doubled) fires
+;              motion_gg with count=5 → cursor to start of
+;              line 5 (clamped to last line for our buffer);
+;              count goes back to 0.
 ;
-; AC reference: AC7, AC8, AC12 (story 1.10).
+; AC reference: AC7, AC8, AC12 (story 1.10) + Story 2.6 AC7.
 ;
 ; Sentinel codes at 0xCFFE on failure (TH1):
 ;   0xE1 — first 'g' did not set pending_motion_prefix = 'g'
-;   0xE2 — first 'g' set status_dirty (it must NOT — no stub)
+;   0xE2 — first 'g' set status_dirty (it must NOT — no handler)
 ;   0xE3 — first 'g' modified count_accumulator
-;   0xE4 — second 'g' did not set status_dirty (stub did not fire)
+;   0xE4 — second 'g' did not move cursor to 0 (motion_gg did not fire)
 ;   0xE5 — second 'g' left pending_motion_prefix nonzero
 ;   0xE6 — second 'g' left count_accumulator nonzero
 ;   0xE7 — second 'g' left pending_operator nonzero
@@ -42,13 +46,29 @@
 
 ;; ----- Test body -----
 
-    ;; Pre-zero parser state and status_dirty.
+    ;; Pre-zero parser state and status_dirty. Pre-seed gap/cursor
+    ;; for motion_gg's reads in Subtest 2.
     LD      HL, 0
     LD      (count_accumulator), HL
     XOR     A
     LD      (pending_operator), A
     LD      (pending_motion_prefix), A
     LD      (status_dirty), A
+
+    ;; Pre-seed gap_start so motion_gg's no-count path can compute
+    ;; cursor=0 sanely (it doesn't actually read gap_start in the
+    ;; no-count branch, but the with-count branch in Subtest 3 does
+    ;; via motion_byte_at_logical → file_length math).
+    CALL    gapbuf_init                 ; gap covers entire buffer (empty)
+    LD      HL, .payload
+    LD      DE, GAP_BUFFER_BASE
+    LD      BC, 11
+    LDIR
+    LD      HL, GAP_BUFFER_BASE + 11
+    LD      (gap_start), HL             ; 11-byte payload "line1\nline2"
+
+    LD      HL, 8
+    LD      (cursor_offset), HL         ; cursor mid-line2
 
     ;; Subtest 1: first 'g' sets pending_motion_prefix.
     LD      A, 'g'
@@ -77,14 +97,18 @@
     JP      test_fail
 .ok1c:
 
-    ;; Subtest 2: second 'g' fires gg-motion stub.
-    ;; (pending_motion_prefix already 'g' from Subtest 1.)
+    ;; Subtest 2: second 'g' fires motion_gg (Story 2.6).
+    ;; (pending_motion_prefix already 'g' from Subtest 1;
+    ;; count_accumulator == 0 from Subtest 1 → no-count branch
+    ;; → cursor moves to 0.)
     LD      A, 'g'
     CALL    parser_handle_motion_prefix
 
-    LD      A, (status_dirty)
-    OR      A
-    JR      NZ, .ok2a
+    LD      HL, (cursor_offset)
+    LD      A, H
+    OR      L
+    JR      Z, .ok2a
+    LD      A, L
     LD      B, A
     LD      A, 0xE4
     JP      test_fail
@@ -154,6 +178,9 @@
 
     JP      test_pass
 
+.payload:
+    DEFB    "line1", 0x0A, "line2"      ; 11 bytes; LF at offset 5
+
 ;; ----- LOCAL init_teardown stub (Story 2.3) -----
     INCLUDE "../inc/test_teardown_stub.inc"
 ;; ----- test_pass / test_fail labels -----
@@ -164,6 +191,7 @@
     INCLUDE "../../src/render.asm"
     INCLUDE "../../src/dispatch.asm"
     INCLUDE "../../src/parser.asm"
+    INCLUDE "../../src/motions.asm"     ; Story 2.5: dispatch_normal forward-references motion_h/j/k/l
     INCLUDE "../../src/gapbuf.asm"
     INCLUDE "../../src/exline.asm"
     INCLUDE "../../src/fileio.asm"

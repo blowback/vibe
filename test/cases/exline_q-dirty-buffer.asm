@@ -133,6 +133,7 @@
     INCLUDE "../../src/render.asm"
     INCLUDE "../../src/dispatch.asm"
     INCLUDE "../../src/parser.asm"
+    INCLUDE "../../src/motions.asm"     ; Story 2.5: dispatch_normal forward-references motion_h/j/k/l
     INCLUDE "../../src/gapbuf.asm"
     INCLUDE "../../src/exline.asm"
     ;; Story 2.2 / 2.3 pull-forward: exline.asm now references

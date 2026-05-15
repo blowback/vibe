@@ -97,7 +97,13 @@
 ;   src/motions.asm  (Story 2.5 — motion_h / motion_j / motion_k
 ;                     / motion_l forward-referenced from
 ;                     dispatch_normal; parser_clear tail-JPs from
-;                     mode-change and unbound handlers per AC13)
+;                     mode-change and unbound handlers per AC13.
+;                     Story 2.6 — motion_dollar / motion_G /
+;                     motion_b / motion_w added as four new
+;                     dispatch_normal entries; motion_0 / motion_gg
+;                     are NOT direct dispatch entries — they
+;                     dispatch from parser.asm's leading-zero and
+;                     doubled-g arms)
 ;   src/parser.asm   (Story 2.5 — parser_clear is the AC13
 ;                     tail-JP target of every mode-change and
 ;                     unbound handler; was already a dependency
@@ -426,7 +432,10 @@ dispatch_normal:
 .entries:
     DEFB    0x0C                        ; Ctrl-L  — full refresh stub (FR48)
     DEFW    mode_full_refresh_stub
-    ASSERT  '/' > 0x0C
+    ASSERT  '$' > 0x0C
+    DEFB    '$'                         ; '$'     — motion to line-end (FR21, Story 2.6)
+    DEFW    motion_dollar
+    ASSERT  '/' > '$'
     DEFB    '/'                         ; '/'     — search prompt stub (3.1)
     DEFW    mode_search_prompt_stub
     ASSERT  '0' > '/'
@@ -468,13 +477,19 @@ dispatch_normal:
     ASSERT  '>' > '<'
     DEFB    '>'                         ; '>'     — operator (FR39)
     DEFW    parser_handle_operator
-    ASSERT  'O' > '>'
+    ASSERT  'G' > '>'
+    DEFB    'G'                         ; 'G'     — motion to last line (FR22, Story 2.6)
+    DEFW    motion_G
+    ASSERT  'O' > 'G'
     DEFB    'O'                         ; 'O'     — Epic 1 stub for FR27
     DEFW    enter_insert_mode
     ASSERT  'a' > 'O'
     DEFB    'a'                         ; 'a'     — Epic 1 stub for FR25
     DEFW    enter_insert_mode
-    ASSERT  'c' > 'a'
+    ASSERT  'b' > 'a'
+    DEFB    'b'                         ; 'b'     — motion back-word (FR20, Story 2.6)
+    DEFW    motion_b
+    ASSERT  'c' > 'b'
     DEFB    'c'                         ; 'c'     — operator (FR39)
     DEFW    parser_handle_operator
     ASSERT  'd' > 'c'
@@ -504,7 +519,10 @@ dispatch_normal:
     ASSERT  'v' > 'o'
     DEFB    'v'                         ; 'v'     — enter visual (FR15)
     DEFW    enter_visual_mode
-    ASSERT  'y' > 'v'
+    ASSERT  'w' > 'v'
+    DEFB    'w'                         ; 'w'     — motion forward-word (FR20, Story 2.6)
+    DEFW    motion_w
+    ASSERT  'y' > 'w'
     DEFB    'y'                         ; 'y'     — operator (FR39, FR40)
     DEFW    parser_handle_operator
 DISPATCH_NORMAL_COUNT EQU ($ - .entries) / 3
