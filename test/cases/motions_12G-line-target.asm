@@ -81,6 +81,7 @@
     INCLUDE "../../src/dispatch.asm"
     INCLUDE "../../src/parser.asm"
     INCLUDE "../../src/motions.asm"
+    INCLUDE "../../src/edits.asm"
     INCLUDE "../../src/exline.asm"
     INCLUDE "../../src/fileio.asm"
 

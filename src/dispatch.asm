@@ -109,6 +109,18 @@
 ;                     unbound handler; was already a dependency
 ;                     for dispatch_normal's digit / operator /
 ;                     motion-prefix entries)
+;   src/edits.asm    (Story 2.8 — edits_enter_insert_after /
+;                     edits_open_below / edits_open_above replace
+;                     the Epic-1 enter_insert_mode stubs at
+;                     dispatch_normal's 'a' / 'o' / 'O' entries
+;                     ('i' stays on enter_insert_mode);
+;                     edits_insert_backspace + edits_insert_newline
+;                     forward-referenced from the grown
+;                     dispatch_insert table; edits_insert_literal
+;                     forward-referenced from unbound_insert's
+;                     swapped body. All resolved by sjasmplus's
+;                     two-pass model because edits.asm INCLUDEs
+;                     after dispatch.asm in vibe.asm's AR25 chain.)
 ; ============================================================
 
 ;; ============================================================
@@ -388,24 +400,33 @@ unbound_visual:
 ; ----------------------------------------------------------------
 ; unbound_insert
 ; Entered from dispatch_key when the key is not in dispatch_insert
-; (i.e. anything other than Esc — printable letters, control
-; bytes, KEY_ARROW_* synthesized codes). Story 1.9 stubs this as
-; a silent no-op; Story 2.8 lands the literal-byte insertion
-; path that Epic 2 needs.
+; (post-Story-2.8: anything other than Backspace 0x08, Enter 0x0D,
+; Esc 0x1B — printable letters, high-bit bytes, KEY_ARROW_*
+; synthesized codes, control bytes not bound above). Story 2.8
+; replaced the 1.9 silent-RET stub body with a tail-JP into
+; edits_insert_literal — the literal-byte insertion path that
+; Epic 2 needs. The control-byte filter (A < 0x20) lives inside
+; edits_insert_literal; bytes that fail the filter still surface
+; as the silent no-op the 1.9 stub provided, just one level deeper.
 ;
 ; This handler MUST NOT crash on any A — Esc is the only key
 ; that ever escapes INSERT mode (FR16), so a crash here would
-; trap the user in INSERT permanently.
+; trap the user in INSERT permanently. edits_insert_literal's
+; overflow path exits INSERT cleanly (msg_file_too_large +
+; mode -> NORMAL) without crashing.
 ;
-; In:      A = key just consumed (MC4) — ignored by this stub
-; Out:     (none)
-; Trashes: F (RET only — no status write to keep the keystroke
-;          silent and avoid filling the status line on every
-;          keypress in INSERT mode pre-2.8)
-; Calls:   (none)
+; In:      A = key just consumed (MC4).
+; Out:     control transferred to edits_insert_literal. On the
+;          filter-rejected path (A < 0x20 or A >= 0x7F) A is
+;          preserved as the silent no-op returns; on the
+;          success path gapbuf_insert clobbers A. Caller MUST
+;          NOT rely on A across this call.
+; Trashes: A, BC, DE, HL, F (transitively via edits_insert_literal
+;          → gapbuf_insert + render_mark_all_dirty).
+; Calls:   edits_insert_literal (tail-JP).
 ; ----------------------------------------------------------------
 unbound_insert:
-    RET
+    JP      edits_insert_literal
 
 
 ;; ============================================================
@@ -481,11 +502,11 @@ dispatch_normal:
     DEFB    'G'                         ; 'G'     — motion to last line (FR22, Story 2.6)
     DEFW    motion_G
     ASSERT  'O' > 'G'
-    DEFB    'O'                         ; 'O'     — Epic 1 stub for FR27
-    DEFW    enter_insert_mode
+    DEFB    'O'                         ; 'O'     — open line above (FR27, Story 2.8)
+    DEFW    edits_open_above
     ASSERT  'a' > 'O'
-    DEFB    'a'                         ; 'a'     — Epic 1 stub for FR25
-    DEFW    enter_insert_mode
+    DEFB    'a'                         ; 'a'     — append after cursor (FR25, Story 2.8)
+    DEFW    edits_enter_insert_after
     ASSERT  'b' > 'a'
     DEFB    'b'                         ; 'b'     — motion back-word (FR20, Story 2.6)
     DEFW    motion_b
@@ -514,8 +535,8 @@ dispatch_normal:
     DEFB    'l'                         ; 'l'     — cursor right (FR18, Story 2.5)
     DEFW    motion_l
     ASSERT  'o' > 'l'
-    DEFB    'o'                         ; 'o'     — Epic 1 stub for FR26
-    DEFW    enter_insert_mode
+    DEFB    'o'                         ; 'o'     — open line below (FR26, Story 2.8)
+    DEFW    edits_open_below
     ASSERT  'v' > 'o'
     DEFB    'v'                         ; 'v'     — enter visual (FR15)
     DEFW    enter_visual_mode
@@ -530,6 +551,12 @@ DISPATCH_NORMAL_COUNT EQU ($ - .entries) / 3
 dispatch_insert:
     DEFW    unbound_insert
 .entries:
+    DEFB    0x08                        ; Backspace — delete byte before cursor (Story 2.8 AC6)
+    DEFW    edits_insert_backspace
+    ASSERT  0x0D > 0x08
+    DEFB    0x0D                        ; Enter — translate 0x0D → 0x0A LF (Story 2.8 AC10)
+    DEFW    edits_insert_newline
+    ASSERT  0x1B > 0x0D
     DEFB    0x1B                        ; Esc — return to NORMAL (FR16)
     DEFW    enter_normal_mode
 DISPATCH_INSERT_COUNT EQU ($ - .entries) / 3

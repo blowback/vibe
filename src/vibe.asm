@@ -41,8 +41,8 @@
 ;   src/input.asm (Story 1.8); src/statusln.asm (Story 1.5);
 ;   src/gapbuf.asm (Story 1.7); src/render.asm (Story 1.11);
 ;   src/dispatch.asm (Story 1.9); src/parser.asm (Story 1.10);
-;   src/motions.asm (Story 2.5); src/exline.asm (Story 2.1);
-;   src/fileio.asm (Story 2.2)
+;   src/motions.asm (Story 2.5); src/edits.asm (Story 2.8);
+;   src/exline.asm (Story 2.1); src/fileio.asm (Story 2.2)
 ; ============================================================
 
 ;; --- Compile-time-constant includes (dependency order per AR25) ---
@@ -124,7 +124,7 @@
     INCLUDE "parser.asm"
 
 ;; --- Cursor motions (FR18-FR23; motions.asm — Story 2.5+) ---
-; AR25 order: parser -> motions -> (edits / visual / search yet
+; AR25 order: parser -> motions -> edits -> (visual / search yet
 ; to land) -> exline -> fileio -> undo. Story 2.5 lands the
 ; h/j/k/l intra-line and inter-line motions; Story 2.6 extends
 ; with w/b/0/$/gg/G; Story 2.7 verifies counted-motion
@@ -133,12 +133,24 @@
 ; sjasmplus's two-pass assembly resolves them here.
     INCLUDE "motions.asm"
 
+;; --- Buffer edits (FR13, FR16, FR24-FR27; edits.asm — Story 2.8) ---
+; AR25 order: motions -> edits -> exline. Story 2.8 lands the i /
+; a / o / O entry handlers + the INSERT-mode literal / Backspace /
+; Enter handlers — VIBE's first true edit-and-save round-trip
+; surface. dispatch_normal's a / o / O entries forward-reference
+; edits_enter_insert_after / edits_open_below / edits_open_above;
+; dispatch_insert's Backspace / Enter entries forward-reference
+; edits_insert_backspace / edits_insert_newline; unbound_insert's
+; body forward-references edits_insert_literal. Visual / search
+; modules will INCLUDE between edits.asm and exline.asm when they
+; arrive (Story 3.x).
+    INCLUDE "edits.asm"
+
 ;; --- Ex command-line (FR14, FR3, FR8; exline.asm — Story 2.1) ---
-; AR25 order: parser -> motions -> (edits / visual / search yet
-; to land) -> exline -> fileio -> undo. With the edits / visual
-; / search modules not yet present, exline slots in immediately
-; after motions; future stories (2.8-2.13 edits, 3.x
-; search/visual) will INCLUDE between motions.asm and exline.asm
+; AR25 order: edits -> (visual / search yet to land) -> exline ->
+; fileio -> undo. With the visual / search modules not yet present,
+; exline slots in immediately after edits; future stories (3.x
+; search/visual) will INCLUDE between edits.asm and exline.asm
 ; as they arrive. dispatch_command's table forward-references
 ; exline_begin / exline_append_literal / exline_backspace /
 ; exline_dispatch / exline_cancel; sjasmplus's two-pass

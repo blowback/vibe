@@ -302,6 +302,7 @@ test_mbb_set_usr_int:
     INCLUDE "../../src/dispatch.asm"
     INCLUDE "../../src/parser.asm"
     INCLUDE "../../src/motions.asm"     ; Story 2.5: dispatch_normal forward-references motion_h/j/k/l
+    INCLUDE "../../src/edits.asm"     ; Story 2.8: dispatch_normal forward-references edits_*, dispatch_insert table grows, unbound_insert tail-JPs edits_insert_literal
     ;; Story 2.3: init.asm Stage 5 now calls fileio_load_initial;
     ;; the exline + fileio modules are pulled in (in AR25 order)
     ;; so the test build resolves cmd_edit / fileio_load_initial
