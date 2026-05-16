@@ -1,10 +1,14 @@
 ; ============================================================
 ; Module: edits.asm
-; Purpose: Buffer-edit primitives (FR24-FR27). Lands the a / o / O
+; Purpose: Buffer-edit primitives (FR24-FR28). Lands the a / o / O
 ;          entry handlers and the INSERT-mode literal-insert /
 ;          Backspace / Enter handlers in Story 2.8 — VIBE's first
-;          true edit-and-save round-trip surface. FR13 (`i` enters
-;          INSERT) stays wired to enter_insert_mode in dispatch.asm;
+;          true edit-and-save round-trip surface. Story 2.9 adds
+;          edits_delete_char (FR28) — the first NORMAL-mode
+;          mutating operator and the foundation for Stories
+;          2.10-2.11's doubled-operator (dd/yy) and operator+
+;          motion (dw/d$/c5w) work. FR13 (`i` enters INSERT)
+;          stays wired to enter_insert_mode in dispatch.asm;
 ;          FR16 (Esc-to-NORMAL) stays on enter_normal_mode in
 ;          dispatch.asm — neither lives here. Sits between
 ;          motions.asm and exline.asm in the AR25 INCLUDE chain
@@ -26,6 +30,14 @@
 ;          enter_normal_mode's Esc-from-INSERT exit point in
 ;          src/dispatch.asm.
 ;
+;          FR45 undo recording for edits_delete_char is also a
+;          STUB for Story 2.9 — no inverse-op entry written.
+;          Story 2.13's hook site is at edits_delete_char's
+;          `.commit:` label — AFTER the SBC HL,BC == 0 deltas-
+;          done check (so the no-op path doesn't spuriously
+;          emit an empty undo entry) and BEFORE the CALL
+;          edits_dirty_and_redraw.
+;
 ; Public:
 ;   edits_enter_insert_after  ; 'a' — advance cursor 0/1 per EOL rule, enter INSERT
 ;   edits_open_below          ; 'o' — reach EOL, insert LF, enter INSERT on new line below
@@ -33,11 +45,17 @@
 ;   edits_insert_literal      ; INSERT-mode literal-byte insert (replaces 1.9 unbound_insert stub)
 ;   edits_insert_backspace    ; INSERT-mode Backspace (delete byte before cursor; silent at BOF)
 ;   edits_insert_newline      ; INSERT-mode Enter — translates 0x0D → 0x0A (AC10 explicit bind)
+;   edits_delete_char         ; NORMAL-mode `x` — delete byte under cursor (Story 2.9; FR28; counted with BH2 clamp)
 ;
 ; State owned (read/write):
 ;   cursor_offset   ; the o / O / a handlers re-position the cursor;
 ;                     gapbuf_insert / gapbuf_delete advance/retreat
-;                     it transitively. mode_byte is written via
+;                     it transitively. edits_delete_char uses the
+;                     cursor-bounce shape (INC cursor; gapbuf_delete
+;                     dec's back) so the cursor returns to its
+;                     starting offset on each iter — except when the
+;                     post-loop AC1/AC2 clamp dec's it onto the new
+;                     last-printable byte. mode_byte is written via
 ;                     enter_insert_mode on success paths and via
 ;                     direct MODE_NORMAL write on the literal-insert
 ;                     overflow exit. buffer_dirty is set on every
@@ -129,6 +147,35 @@
 ;                  Calls: gapbuf_insert; render_mark_all_dirty (success
 ;                         tail-JP); parser_clear (overflow tail-JP).
 ;
+;   edits_delete_char:
+;                  In:  A = 'x' (MC4; ignored). cursor_offset read;
+;                       count_accumulator read via motion_apply_count.
+;                  Out: success — up to N bytes deleted starting at
+;                       cursor (N = effective count, default 1), with
+;                       BH2 clamp at LF / EOF (loop BREAKs mid-count
+;                       if the cursor would step onto a non-printable
+;                       boundary). Cursor stays at the original offset
+;                       unless the post-delete byte at that offset is
+;                       LF or past EOF AND cursor > 0 — in which case
+;                       cursor decrements by 1 (AC1 EOL-clamp;
+;                       AC2 EOF-clamp). buffer_dirty = 1; all rows
+;                       dirty (LF positions may shift across the
+;                       deletion).
+;                       no-op — cursor on LF / past EOF at entry, OR
+;                       counted form where the first iter-top check
+;                       fires immediately. buffer + cursor +
+;                       buffer_dirty all unchanged.
+;                       Parser state zeroed on every path
+;                       (tail-JP parser_clear).
+;                  Trashes: A, BC, DE, HL, F.
+;                  Calls: motion_apply_count; motion_byte_at_logical
+;                         (pre-check + iter-top + post-clamp);
+;                         gapbuf_delete (cursor-bounce shape per AC8 —
+;                         INC cursor; gapbuf_delete consumes byte at
+;                         original cursor and decrements cursor back);
+;                         edits_dirty_and_redraw (success tail);
+;                         parser_clear (tail-JP both paths).
+;
 ; Architectural enforcement here:
 ;   AR13 — no screen emission. edits.asm contains zero BIOS_CONOUT
 ;          references; the post-edit cursor reposition and row
@@ -161,9 +208,15 @@
 ;   src/motions.asm  (motion_byte_at_logical, motion_find_line_start,
 ;                     motion_find_line_end — read primitives for
 ;                     EOL / EOF inspect and line-start / line-end
-;                     positioning. All preserve BC; edits doesn't
-;                     rely on that here since none of the edit
-;                     handlers iterate a count.)
+;                     positioning. All preserve BC. Story 2.9 adds
+;                     a transitive dependency on motion_apply_count —
+;                     edits_delete_char reads count_accumulator
+;                     through it, defaulting to 1, and iterates a
+;                     count loop where BC's BC-preservation across
+;                     motion_byte_at_logical matters. The
+;                     gapbuf_delete inside the loop trashes BC, so
+;                     the loop saves it via PUSH/POP across each
+;                     call.)
 ;   src/render.asm   (render_mark_all_dirty — conservative dirty-row
 ;                     mark on every successful mutation; the
 ;                     fine-grained render_mark_row_dirty variant is
@@ -544,3 +597,110 @@ edits_insert_newline:
     CALL    gapbuf_insert
     JR      C, edits_overflow_to_normal
     JP      edits_dirty_and_redraw
+
+
+;; ============================================================
+;; --- Public entry: edits_delete_char (FR28; Story 2.9) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; edits_delete_char
+; NORMAL-mode `x` — delete the byte under the cursor. With a
+; pending count, delete up to N bytes (clamping at LF / EOF per
+; BH2). After the loop, if the cursor landed on LF or past EOF,
+; clamp back by 1 (unless cursor == 0, in which case the now-
+; empty / now-on-LF line keeps cursor at 0 — the only valid
+; position).
+;
+; Forward-delete implementation per AC8 ("cursor-bounce"):
+;   INC cursor_offset; CALL gapbuf_delete. gapbuf_delete moves
+;   the gap to the new cursor, decrements gap_start (consuming
+;   the byte that was at the original cursor position), and
+;   decrements cursor_offset back to the original. Net: byte
+;   at original cursor is removed; cursor stays put. AR14-clean
+;   — only the existing public gapbuf primitive is touched.
+;
+; Counted-form algorithm (AC4):
+;   1. BC := count_accumulator (defaulted to 1 by motion_apply_count).
+;   2. Save N on stack so we can detect "0 deletes happened" at
+;      the end (no-op path semantics — AC5 forbids touching
+;      buffer_dirty on the no-op path).
+;   3. Loop:
+;      - Iter top: byte_at(cursor). CF=1 (past EOF) or LF → BREAK
+;        to post-clamp. This same check is the AC1/AC3 pre-check
+;        on iter 1: if the cursor was already on LF / past EOF
+;        before any deletes, BC == N at exit and the post-clamp
+;        skips into the no-op branch (no buffer_dirty write).
+;      - INC cursor; commit; PUSH BC (gapbuf_delete trashes BC);
+;        CALL gapbuf_delete; POP BC.
+;      - DEC BC; if 0 → exit loop (count exhausted).
+;      - Otherwise continue.
+;   4. Exit: HL := N (POP); HL - BC = deletes done. If zero, JP
+;      parser_clear directly (no buffer_dirty, no render mark).
+;   5. Otherwise post-clamp: if cursor == 0 skip; else
+;      byte_at(cursor); if LF or past EOF, DEC cursor.
+;   6. CALL edits_dirty_and_redraw (buffer_dirty := 1 +
+;      render_mark_all_dirty); JP parser_clear.
+;
+; FR45 undo recording: STUB for Story 2.9. The hook site for
+; Story 2.13 is at the `.commit:` label — AFTER the SBC HL,BC
+; == 0 deltas-done check at `.exit_loop` (so the no-op path
+; that branches to `.noop_clear` doesn't spuriously emit an
+; empty undo entry) and BEFORE the CALL edits_dirty_and_redraw.
+; `u` post-`x` reports msg_nothing_to_undo via the existing
+; no-entry path.
+;
+; In:      A = 'x' (MC4; ignored). count_accumulator read via
+;          motion_apply_count.
+; Out:     success — N bytes deleted (1 <= N <= count, clamped
+;          at LF / EOF); cursor at original position or clamped
+;          back by 1 per AC1; buffer_dirty = 1; all rows dirty;
+;          parser state cleared.
+;          no-op — cursor already on LF / past EOF; buffer +
+;          cursor + buffer_dirty unchanged; parser cleared.
+; Trashes: A, BC, DE, HL, F.
+; Calls:   motion_apply_count, motion_byte_at_logical,
+;          gapbuf_delete, edits_dirty_and_redraw (success tail),
+;          parser_clear (tail-JP both paths).
+; ----------------------------------------------------------------
+edits_delete_char:
+    CALL    motion_apply_count          ; BC = N (default 1)
+    PUSH    BC                          ; [N]  — for did-delete detection
+.loop:
+    LD      HL, (cursor_offset)
+    CALL    motion_byte_at_logical      ; A = byte at cursor; CF=1 past EOF; HL preserved
+    JR      C, .exit_loop               ; past EOF (or pre-check past-EOF on iter 1) → BREAK
+    CP      0x0A
+    JR      Z, .exit_loop               ; on LF (or pre-check LF on iter 1) → BREAK
+    INC     HL
+    LD      (cursor_offset), HL         ; cursor-bounce: cursor advances past the byte
+    PUSH    BC                          ; [N] [BC] — gapbuf_delete trashes BC
+    CALL    gapbuf_delete               ; consumes byte at original cursor; cursor returns
+    POP     BC                          ; [N] — restore loop counter
+    DEC     BC
+    LD      A, B
+    OR      C
+    JR      NZ, .loop                   ; more deletes to attempt
+.exit_loop:
+    POP     HL                          ; HL = N; () — paired with entry PUSH BC
+    OR      A
+    SBC     HL, BC                      ; HL = N - BC = deletes_done
+    LD      A, H
+    OR      L
+    JR      Z, .noop_clear              ; 0 deletes — skip dirty + clamp
+    ;; --- Post-clamp (AC1 / AC2 / AC4 EOL-clamp) ---
+    LD      HL, (cursor_offset)
+    LD      A, H
+    OR      L
+    JR      Z, .commit                  ; cursor == 0 — clamp guarded (now-empty buf / LF at 0)
+    CALL    motion_byte_at_logical      ; HL preserved
+    JR      C, .do_clamp                ; cursor now past EOF (e.g. deleted last byte of file)
+    CP      0x0A
+    JR      NZ, .commit                 ; cursor on a real byte — leave it
+.do_clamp:
+    DEC     HL                          ; clamp back onto the new last printable byte
+    LD      (cursor_offset), HL
+.commit:
+    CALL    edits_dirty_and_redraw      ; buffer_dirty=1 + render_mark_all_dirty
+.noop_clear:
+    JP      parser_clear

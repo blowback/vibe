@@ -120,7 +120,11 @@
 ;                     forward-referenced from unbound_insert's
 ;                     swapped body. All resolved by sjasmplus's
 ;                     two-pass model because edits.asm INCLUDEs
-;                     after dispatch.asm in vibe.asm's AR25 chain.)
+;                     after dispatch.asm in vibe.asm's AR25 chain.
+;                     Story 2.9 — edits_delete_char added as the
+;                     new dispatch_normal 'x' entry (FR28; the
+;                     first NORMAL-mode mutating operator); slot
+;                     count grows 32 → 33.)
 ; ============================================================
 
 ;; ============================================================
@@ -543,7 +547,10 @@ dispatch_normal:
     ASSERT  'w' > 'v'
     DEFB    'w'                         ; 'w'     — motion forward-word (FR20, Story 2.6)
     DEFW    motion_w
-    ASSERT  'y' > 'w'
+    ASSERT  'x' > 'w'
+    DEFB    'x'                         ; 'x'     — single-character delete (FR28, Story 2.9)
+    DEFW    edits_delete_char
+    ASSERT  'y' > 'x'
     DEFB    'y'                         ; 'y'     — operator (FR39, FR40)
     DEFW    parser_handle_operator
 DISPATCH_NORMAL_COUNT EQU ($ - .entries) / 3
