@@ -13,6 +13,7 @@
 ;                    STATUS_ROW, STATUS_LINE_WIDTH
 ;   Input timing:    ESC_TIMEOUT_TICKS
 ;   Editing knobs:   INDENT_BYTE
+;   Yank kinds:      KIND_CHAR, KIND_LINE, KIND_BLOCK (Story 2.10)
 ;
 ; State owned (read/write):
 ;   (none — equates are constants only)
@@ -65,6 +66,22 @@ ESC_TIMEOUT_TICKS     EQU 2       ; 60 Hz tick window for Esc/arrow disambiguati
 
 ;; --- Editing knobs ---
 INDENT_BYTE           EQU 0x20    ; ASCII space — byte inserted/removed by >, <, >>, << (Stories 2.11, 3.7; readiness item #6)
+
+;; --- Yank register kinds (SR6 — Story 2.10) ---
+; 1-byte discriminator stored in yank_kind (state.inc:54). The 0x00 /
+; 0x01 / 0x02 numeric form was chosen over the 'C'/'L'/'B' ASCII form
+; because: (a) init_cold_start's LDIR zero-fill leaves yank_kind = 0
+; pre-first-yank, so KIND_CHAR = 0 makes an uninitialised register
+; read as the natural default (character-wise, the most common kind);
+; (b) the smallest 3-value space (3 byte equates, no inline constants
+; for the values when paste-time-dispatch on yank_kind lands in Story
+; 2.12). Story 2.10 writes KIND_LINE only (dd / yy); Story 2.11
+; (dw / d$ / c5w / y3j) introduces KIND_CHAR usage; Epic 3 visual-
+; block introduces KIND_BLOCK. Past 256 kinds the 1-byte form runs
+; out — plenty of headroom.
+KIND_CHAR             EQU 0x00    ; character-wise yank (Story 2.11 dw/d$/c5w/y3j)
+KIND_LINE             EQU 0x01    ; line-wise yank (Story 2.10 dd/yy — THIS STORY introduces)
+KIND_BLOCK            EQU 0x02    ; block-wise yank (Epic 3 visual-block; reserved)
 
 ;; --- Notes ---
 ; GAP_BUFFER_BASE is intentionally NOT defined here. It is positional,

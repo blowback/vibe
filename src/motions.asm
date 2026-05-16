@@ -64,6 +64,16 @@
 ;                     a single j/k step (DEFW; 2 B).
 ;   motions_target_start ; module-local scratch — saved line_start
 ;                     of the destination line across a j/k step.
+;   motions_compose_entry ; module-local scratch (Story 2.11) —
+;                     entry cursor saved by EVERY motion handler's
+;                     prologue; read ONLY by edits_compose_or_clear
+;                     (and transitively by op_compose_*).
+;   pending_motion_inclusive ; state.inc cell (Story 2.11) — set
+;                     to 1 by motion_dollar's prologue; cleared by
+;                     parser_clear (which every compose-op tail-JPs
+;                     transitively). motion_dollar is the only writer
+;                     among Story-2.11 motions; future inclusive
+;                     motions (e, f, t, %) set the same flag.
 ;
 ; State read-only:
 ;   gap_start, gap_end             ; SR2 / SR3 source data for the
@@ -138,11 +148,22 @@
 ; Dependencies:
 ;   inc/equates.inc  (GAP_BUFFER_MAX)
 ;   inc/state.inc    (GAP_BUFFER_BASE, gap_start, gap_end,
-;                     cursor_offset, count_accumulator)
+;                     cursor_offset, count_accumulator,
+;                     pending_motion_inclusive)
 ;   src/parser.asm   (parser_clear — tail-JP from every motion
 ;                     handler; resolved forward by sjasmplus's
 ;                     two-pass model since parser.asm INCLUDEs
-;                     before motions.asm in vibe.asm's AR25 chain)
+;                     before motions.asm in vibe.asm's AR25 chain.
+;                     Story 2.11: motion tails now JP
+;                     edits_compose_or_clear (in edits.asm; also
+;                     forward-referenced) which routes to per-op
+;                     bodies or falls through to parser_clear for
+;                     bare motion.)
+;   src/edits.asm    (edits_compose_or_clear — Story 2.11 compose
+;                     tail; forward-referenced from every motion
+;                     handler; resolved by sjasmplus's two-pass
+;                     model since edits.asm INCLUDEs after
+;                     motions.asm in vibe.asm's AR25 chain)
 ; ============================================================
 
 ;; ============================================================
@@ -170,6 +191,11 @@
 ;          (tail-JP).
 ; ----------------------------------------------------------------
 motion_h:
+    ;; Story 2.11 compose prologue: save entry cursor for the compose
+    ;; tail (edits_compose_or_clear). Unconditional — bare-motion
+    ;; path observes no change.
+    LD      HL, (cursor_offset)
+    LD      (motions_compose_entry), HL
     CALL    motion_apply_count          ; BC = effective count
     LD      HL, (cursor_offset)
 .step:
@@ -186,7 +212,7 @@ motion_h:
     JR      NZ, .step
 .done:
     LD      (cursor_offset), HL
-    JP      parser_clear
+    JP      edits_compose_or_clear      ; Story 2.11 compose tail
 
 .clamp_undo:
     ;; The DEC HL above was speculative; the byte at HL-1 turned out
@@ -230,6 +256,9 @@ motion_h:
 ;          (tail-JP).
 ; ----------------------------------------------------------------
 motion_l:
+    ;; Story 2.11 compose prologue.
+    LD      HL, (cursor_offset)
+    LD      (motions_compose_entry), HL
     CALL    motion_apply_count          ; BC = count
     LD      HL, (cursor_offset)
 .step:
@@ -254,7 +283,7 @@ motion_l:
     JR      NZ, .step
 .done:
     LD      (cursor_offset), HL
-    JP      parser_clear
+    JP      edits_compose_or_clear      ; Story 2.11 compose tail
 
 .clamp_undo:
     ;; The INC HL above was speculative; the destination would have
@@ -311,6 +340,9 @@ motion_l:
 ;          parser_clear (tail-JP).
 ; ----------------------------------------------------------------
 motion_j:
+    ;; Story 2.11 compose prologue.
+    LD      HL, (cursor_offset)
+    LD      (motions_compose_entry), HL
     CALL    motion_apply_count          ; BC = count
 
     ;; --- Sticky column: compute col ONCE at entry (Story 2.7 AC10) ---
@@ -379,7 +411,7 @@ motion_j:
     OR      C
     JR      NZ, .step
 .done:
-    JP      parser_clear
+    JP      edits_compose_or_clear      ; Story 2.11 compose tail
 
 
 ;; ============================================================
@@ -418,6 +450,9 @@ motion_j:
 ;          (tail-JP).
 ; ----------------------------------------------------------------
 motion_k:
+    ;; Story 2.11 compose prologue.
+    LD      HL, (cursor_offset)
+    LD      (motions_compose_entry), HL
     CALL    motion_apply_count          ; BC = count
 
     ;; --- Sticky column: compute col ONCE at entry (Story 2.7 AC10) ---
@@ -487,7 +522,7 @@ motion_k:
     OR      C
     JR      NZ, .step
 .done:
-    JP      parser_clear
+    JP      edits_compose_or_clear      ; Story 2.11 compose tail
 
 
 ;; ============================================================
@@ -746,6 +781,9 @@ is_word_char:
 ;          parser_clear (tail-JP).
 ; ----------------------------------------------------------------
 motion_w:
+    ;; Story 2.11 compose prologue.
+    LD      HL, (cursor_offset)
+    LD      (motions_compose_entry), HL
     CALL    motion_apply_count          ; BC = effective count
     LD      HL, (cursor_offset)
 .step:
@@ -793,7 +831,7 @@ motion_w:
     JR      NZ, .step
 .done:
     LD      (cursor_offset), HL
-    JP      parser_clear
+    JP      edits_compose_or_clear      ; Story 2.11 compose tail
 
 
 ;; ============================================================
@@ -819,6 +857,9 @@ motion_w:
 ;          parser_clear (tail-JP).
 ; ----------------------------------------------------------------
 motion_b:
+    ;; Story 2.11 compose prologue.
+    LD      HL, (cursor_offset)
+    LD      (motions_compose_entry), HL
     CALL    motion_apply_count          ; BC = count
     LD      HL, (cursor_offset)
 .step:
@@ -883,7 +924,7 @@ motion_b:
     JR      NZ, .step
 .done:
     LD      (cursor_offset), HL
-    JP      parser_clear
+    JP      edits_compose_or_clear      ; Story 2.11 compose tail
 
 
 ;; ============================================================
@@ -904,10 +945,12 @@ motion_b:
 ; Calls:   motion_find_line_start, parser_clear (tail-JP).
 ; ----------------------------------------------------------------
 motion_0:
+    ;; Story 2.11 compose prologue.
     LD      HL, (cursor_offset)
+    LD      (motions_compose_entry), HL
     CALL    motion_find_line_start
     LD      (cursor_offset), HL
-    JP      parser_clear
+    JP      edits_compose_or_clear      ; Story 2.11 compose tail
 
 
 ;; ============================================================
@@ -931,6 +974,13 @@ motion_0:
 ; Calls:   motion_find_line_end, parser_clear (tail-JP).
 ; ----------------------------------------------------------------
 motion_dollar:
+    ;; Story 2.11 compose prologue + inclusive-landing flag (motion_dollar
+    ;; lands on the LAST PRINTABLE byte of the line, so the compose range
+    ;; must be extended by 1 byte to be vi-faithful for d$ / y$ / c$).
+    LD      HL, (cursor_offset)
+    LD      (motions_compose_entry), HL
+    LD      A, 1
+    LD      (pending_motion_inclusive), A
     LD      HL, (cursor_offset)
     PUSH    HL                          ; [cursor] — saved across motion_find_line_end
                                         ;          (which trashes DE per AR23)
@@ -943,7 +993,7 @@ motion_dollar:
     DEC     HL                          ; HL = eol - 1 (last printable byte)
     LD      (cursor_offset), HL
 .no_move:
-    JP      parser_clear
+    JP      edits_compose_or_clear      ; Story 2.11 compose tail
 
 
 ;; ============================================================
@@ -1034,6 +1084,9 @@ motion_find_line_n:
 ; Calls:   motion_find_line_n, parser_clear (tail-JP).
 ; ----------------------------------------------------------------
 motion_G:
+    ;; Story 2.11 compose prologue.
+    LD      HL, (cursor_offset)
+    LD      (motions_compose_entry), HL
     LD      DE, (count_accumulator)
     LD      A, D
     OR      E
@@ -1049,7 +1102,7 @@ motion_G:
     CALL    motion_find_line_n
 .commit:
     LD      (cursor_offset), HL
-    JP      parser_clear
+    JP      edits_compose_or_clear      ; Story 2.11 compose tail
 
 
 ;; ============================================================
@@ -1073,6 +1126,9 @@ motion_G:
 ; Calls:   motion_find_line_n (with-count path), parser_clear (tail-JP).
 ; ----------------------------------------------------------------
 motion_gg:
+    ;; Story 2.11 compose prologue.
+    LD      HL, (cursor_offset)
+    LD      (motions_compose_entry), HL
     LD      DE, (count_accumulator)
     LD      A, D
     OR      E
@@ -1083,7 +1139,7 @@ motion_gg:
     CALL    motion_find_line_n
 .commit:
     LD      (cursor_offset), HL
-    JP      parser_clear
+    JP      edits_compose_or_clear      ; Story 2.11 compose tail
 
 
 ;; ============================================================
@@ -1098,3 +1154,13 @@ motion_gg:
 
 motions_col:           DEFW 0    ; saved column across a j/k step
 motions_target_start:  DEFW 0    ; saved destination line_start across a j/k step
+; motions_compose_entry — cursor at motion-handler entry, saved by the
+; compose prologue of every NORMAL-mode motion handler. Read ONLY by
+; edits_compose_or_clear (and transitively by op_compose_*). Written
+; unconditionally on every motion entry; the bare-motion path ignores
+; it. Story 2.11 wires this cell. AR23 contract: writers = motion_h /
+; l / j / k / w / b / 0 / dollar / G / gg entry prologues; reader =
+; edits_compose_or_clear (forward-referenced; resolved by sjasmplus's
+; two-pass model — edits.asm INCLUDEs after motions.asm in vibe.asm's
+; AR25 chain).
+motions_compose_entry: DEFW 0    ; cursor at motion-handler entry (Story 2.11)

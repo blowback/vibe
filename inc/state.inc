@@ -9,8 +9,8 @@
 ;   Anchors:        static_data_base, static_end, GAP_BUFFER_BASE
 ;   Small state:    mode_byte, visual_submode, buffer_dirty,
 ;                   pending_operator, yank_kind, status_dirty,
-;                   pending_motion_prefix, input_held_byte,
-;                   input_held_flag
+;                   pending_motion_prefix, pending_motion_inclusive,
+;                   input_held_byte, input_held_flag
 ;   16-bit state:   cursor_offset, gap_start, gap_end,
 ;                   visual_anchor, count_accumulator,
 ;                   yank_length, top_line_offset,
@@ -56,6 +56,18 @@ static_off            =   static_off + 1
 status_dirty          EQU static_data_base + static_off
 static_off            =   static_off + 1
 pending_motion_prefix EQU static_data_base + static_off
+static_off            =   static_off + 1
+; pending_motion_inclusive — 1-byte flag set by motion handlers whose
+; landing offset is INCLUSIVE (cursor lands ON the last byte of the
+; range, not one-past-the-last). Story 2.11: only motion_dollar writes
+; A=1 here (its landing is the last printable byte of the line). Read
+; and cleared by op_compose_d / op_compose_y / op_compose_c via the
+; parser_clear tail (parser_clear zeroes this cell alongside the other
+; pending_* fields — cleared centrally so the cleanup is shared across
+; all five per-operator bodies). Future inclusive motions (e, f, t, %)
+; will set the flag the same way. KIND_BLOCK / line-class operators do
+; NOT touch it.
+pending_motion_inclusive EQU static_data_base + static_off
 static_off            =   static_off + 1
 input_held_byte       EQU static_data_base + static_off
 static_off            =   static_off + 1

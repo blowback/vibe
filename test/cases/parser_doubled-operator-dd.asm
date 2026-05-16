@@ -1,38 +1,41 @@
 ; ============================================================
 ; Module: test/cases/parser_doubled-operator-dd.asm
-; Purpose: AC5, AC6 — verify parser_handle_operator:
-;            - First operator (no prior pending) stores in
-;              pending_operator and preserves count_accumulator.
-;              No stub fires (status_dirty stays 0).
-;            - Doubled operator (same operator twice in a row)
-;              dispatches parser_doubled_operator_stub, which
-;              tail-JPs to parser_clear: count_accumulator,
-;              pending_operator, pending_motion_prefix all 0
-;              and status_dirty set by the stub.
-;            - Different operators ('d' then 'y') are not
-;              doubled: last-operator-wins, no stub fires.
+; Purpose: AC5, AC6 (Story 1.10) — verify parser_handle_operator
+;          first-press / doubled-press / last-wins semantics.
 ;
-; AC reference: AC5, AC6, AC12 (story 1.10).
+;          STORY 2.10 UPDATE: the Story-1.10 stub
+;          parser_doubled_operator_stub was rewritten as a real
+;          dispatcher routing to op_dd / op_yy / msg_not_implemented
+;          (c/>/<). With an INITIALISED empty gap buffer, op_dd /
+;          op_yy hit the 0-byte guard and JP parser_clear silently
+;          — so the doubled-press path no longer SETS status_dirty
+;          (it used to, when the stub surfaced msg_not_implemented).
+;          The Subtest 2 / 3 / 5 assertions on status_dirty are
+;          dropped accordingly. The parser-state-cleared assertions
+;          (pending_operator / count_accumulator /
+;          pending_motion_prefix all 0 post-dispatch) are unchanged —
+;          op_dd / op_yy tail-JP parser_clear, which is the load-
+;          bearing post-dispatch invariant. The c/>/< fall-through
+;          surfaces "not yet implemented" via a separate test
+;          (parser_doubled-operator-routes-to-not-implemented.asm).
+;
+; AC reference: AC5, AC6, AC12 (story 1.10); AC1 (story 2.10).
 ;
 ; Sentinel codes at 0xCFFE on failure (TH1):
 ;   0xE1 — first 'd' did not set pending_operator = 'd'
 ;   0xE2 — first 'd' modified count_accumulator (must stay 0)
-;   0xE3 — first 'd' set status_dirty (it must NOT — no stub)
-;   0xE4 — second 'd' did not set status_dirty (stub did not fire)
+;   0xE3 — first 'd' set status_dirty (it must NOT — no dispatch)
 ;   0xE5 — second 'd' left pending_operator nonzero
 ;   0xE6 — second 'd' left count_accumulator nonzero
 ;   0xE7 — second 'd' left pending_motion_prefix nonzero
-;   0xE8 — 'yy' did not zero pending_operator (yy variant of AC6)
+;   0xE8 — 'yy' did not zero pending_operator
 ;   0xE9 — 'd' then 'y' did not leave pending_operator = 'y'
 ;          (last-operator-wins; doubled-detection saw d != y)
 ;   0xEA — 'd' then 'y' set status_dirty (it must NOT)
-;   0xEB — 'yy' did not set status_dirty (stub did not actually fire)
 ;   0xEC — 'yy' left pending_motion_prefix nonzero (parser_clear
-;          did not run after the stub)
-;   0xED — 'dyy' did not fire yy stub (last-operator-wins: 'd' then
-;          'y' stores y; second 'y' must match and fire stub)
+;          did not run after the dispatch)
 ;   0xEE — 'dyy' left pending_operator nonzero (parser_clear must
-;          have run after the yy stub)
+;          have run after the yy dispatch)
 ;   B    — diagnostic byte
 ; ============================================================
 
@@ -55,6 +58,15 @@
     LD      (pending_operator), A
     LD      (pending_motion_prefix), A
     LD      (status_dirty), A
+    LD      (buffer_dirty), A
+    LD      A, MODE_NORMAL
+    LD      (mode_byte), A
+
+    ;; Initialise gap buffer to empty (Story 2.10 — op_dd / op_yy
+    ;; need real gap-buffer state; without this the doubled-op
+    ;; dispatch walks uninitialised memory looking for an LF and
+    ;; would trigger a 32 KB yank-too-large false positive).
+    CALL    gapbuf_init
 
     ;; Subtest 1: first 'd' sets pending_operator.
     LD      A, 'd'
@@ -83,18 +95,13 @@
     JP      test_fail
 .ok1c:
 
-    ;; Subtest 2: second 'd' fires doubled-operator stub.
+    ;; Subtest 2: second 'd' routes through the dispatcher to
+    ;; op_dd. With the gap buffer empty, op_dd's 0-byte guard
+    ;; fires and JPs parser_clear silently (no status surface).
     ;; (pending_operator is already 'd' from Subtest 1.)
     LD      A, 'd'
     CALL    parser_handle_operator
 
-    LD      A, (status_dirty)
-    OR      A
-    JR      NZ, .ok2a
-    LD      B, A
-    LD      A, 0xE4
-    JP      test_fail
-.ok2a:
     LD      A, (pending_operator)
     OR      A
     JR      Z, .ok2b
@@ -118,10 +125,12 @@
     JP      test_fail
 .ok2d:
 
-    ;; Subtest 3: 'yy' variant — second 'y' fires stub + clear.
-    ;; Verify three post-conditions: pending_operator cleared,
-    ;; status_dirty set (stub fired), pending_motion_prefix cleared
-    ;; (parser_clear ran completely, not just on pending_operator).
+    ;; Subtest 3: 'yy' variant — second 'y' routes through the
+    ;; dispatcher to op_yy. With the gap buffer empty, op_yy's
+    ;; 0-byte guard fires and JPs parser_clear silently.
+    ;; Verify two post-conditions: pending_operator cleared and
+    ;; pending_motion_prefix cleared (parser_clear ran completely,
+    ;; not just on pending_operator).
     XOR     A
     LD      (pending_operator), A
     LD      (pending_motion_prefix), A
@@ -137,13 +146,6 @@
     LD      A, 0xE8
     JP      test_fail
 .ok3a:
-    LD      A, (status_dirty)
-    OR      A
-    JR      NZ, .ok3b
-    LD      B, A
-    LD      A, 0xEB
-    JP      test_fail
-.ok3b:
     LD      A, (pending_motion_prefix)
     OR      A
     JR      Z, .ok3c
@@ -177,13 +179,14 @@
 
     ;; Subtest 5: 'dyy' — last-operator-wins makes 'd' then 'y'
     ;; store 'y' (Subtest 4 already verified that); the second 'y'
-    ;; then matches pending_operator='y' and fires the yy stub.
-    ;; This locks in the documented "stale-pending-operator → last-
-    ;; operator-wins → doubled triggers on the LATEST operator"
-    ;; sharp edge. A regression that made first-operator-sticks
-    ;; would leave pending_operator='d' and the second 'y' would
-    ;; mismatch (storing 'y' on the first-operator path), so
-    ;; status_dirty would stay 0.
+    ;; then matches pending_operator='y' and dispatches op_yy via
+    ;; the doubled path. This locks in the documented "stale-
+    ;; pending-operator → last-operator-wins → doubled triggers on
+    ;; the LATEST operator" sharp edge. A regression that made
+    ;; first-operator-sticks would leave pending_operator='d' and
+    ;; the second 'y' would mismatch (storing 'y' on the first-
+    ;; operator path), so pending_operator would still equal 'y'
+    ;; (parser_clear would NOT run; 0xEE would catch it).
     XOR     A
     LD      (pending_operator), A
     LD      (pending_motion_prefix), A
@@ -194,13 +197,6 @@
     CALL    parser_handle_operator
     LD      A, 'y'
     CALL    parser_handle_operator
-    LD      A, (status_dirty)
-    OR      A
-    JR      NZ, .ok5a
-    LD      B, A
-    LD      A, 0xED
-    JP      test_fail
-.ok5a:
     LD      A, (pending_operator)
     OR      A
     JR      Z, .ok5b

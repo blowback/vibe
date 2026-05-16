@@ -18,21 +18,41 @@
 ;                                          ; then parser_clear
 ;            parser_clear                 ; reset all three fields
 ;
-;          Plus one Epic-1 placeholder stub that surfaces
-;          msg_not_implemented while the real doubled-op handler
-;          waits for Story 2.10:
+;          Plus the doubled-operator dispatcher (Story 2.10 promoted
+;          this from the Epic-1 stub to a real three-way dispatcher;
+;          Story 2.11 extends it for `>>` / `<<`):
 ;
-;            parser_doubled_operator_stub ; dd/yy/cc/<<<>> (FR40; Story 2.10)
+;            parser_doubled_operator_stub ; reads pending_operator,
+;                                          ; branches → op_dd / op_yy
+;                                          ; / op_indent_line (>>) /
+;                                          ; op_dedent_line (<<) /
+;                                          ; msg_not_implemented for
+;                                          ; cc (FR40; out of MVP scope).
 ;
-;          (Story 2.6 retired the leading-`0` and `gg` Epic-1
-;          placeholder stubs; the parser's leading-zero and
-;          doubled-g arms now JP motion_0 / motion_gg in
-;          src/motions.asm directly.)
+;          (The body was rewritten in-place; the symbol name
+;          `parser_doubled_operator_stub` is retained for AR25
+;          INCLUDE-chain stability — no caller-site update at
+;          parser_handle_operator's `JP parser_doubled_operator_stub`
+;          line. Story 2.6 had previously retired the leading-`0`
+;          and `gg` Epic-1 placeholder stubs; the parser's
+;          leading-zero and doubled-g arms now JP motion_0 /
+;          motion_gg in src/motions.asm directly.)
 ;
 ;          Pure metadata module — no buffer mutation (AR14),
 ;          no screen emission (AR13), no raw BDOS (AR15). The
 ;          stubs surface user-visible feedback through the AR12
 ;          status-message funnel only.
+;
+;          Story 2.11 extends parser_clear to also zero
+;          `pending_motion_inclusive` (the per-motion flag set by
+;          motion_dollar to extend the half-open range by 1 byte for
+;          vi-faithful `d$` semantics). Cleared centrally here so the
+;          cleanup is shared across op_compose_d / op_compose_y /
+;          op_compose_c (and is automatic for any future inclusive
+;          motion). Zeroing happens AFTER the per-operator body reads
+;          the flag, because every per-operator body tail-JPs
+;          parser_clear (transitively for op_compose_c via
+;          enter_insert_mode).
 ;
 ;          Asymmetric-clear protocol for pending_motion_prefix
 ;          (the parser-state half of the Story 1.3 deferral on
@@ -67,6 +87,11 @@
 ;                            parser_clear, plus the AC11 clear-on-entry
 ;                            path inside parser_handle_digit and
 ;                            parser_handle_operator
+;   pending_motion_inclusive ; 1 byte; writer = parser_clear (cleanup
+;                            after compose-op consumption — Story 2.11);
+;                            motion_dollar is the only motion handler
+;                            that SETs it to 1, prior to its compose
+;                            tail.
 ;
 ; Register conventions (across public entry points):
 ;   parser_handle_digit:          In:  A = digit char ('0'..'9')
@@ -116,33 +141,61 @@
 ;   parser_clear:                 In:  (none)
 ;                                 Out: count_accumulator = 0,
 ;                                      pending_operator = 0,
-;                                      pending_motion_prefix = 0;
-;                                      no other state touched.
+;                                      pending_motion_prefix = 0,
+;                                      pending_motion_inclusive = 0
+;                                      (Story 2.11); no other state
+;                                      touched.
 ;                                 Trashes: A, HL, F
 ;                                 Calls:   (none)
 ;
-;   Stub handler (parser_doubled_operator_stub):
-;                                 In:  (none — A and HL freely
-;                                      clobbered)
-;                                 Out: status_buffer = "not yet
-;                                      implemented"; status_dirty
-;                                      set. Tail-JPs to parser_clear
-;                                      (doubled-op consumes its
-;                                      entire pending-state).
-;                                 Trashes: A, BC, DE, HL, F
-;                                 Calls:   status_set_message;
-;                                          parser_clear (tail-call)
+;   parser_doubled_operator_stub (Story 2.10 — real dispatcher;
+;                                 Story 2.11 — extended for `>>` / `<<`):
+;                                 In:  pending_operator already set
+;                                      by the prior parser_handle_operator
+;                                      call (dispatch chain handshake).
+;                                      count_accumulator MAY be non-zero
+;                                      (e.g. `5dd`, `3>>`) — preserved
+;                                      across the dispatch and READ by
+;                                      op_dd / op_yy / op_indent_line /
+;                                      op_dedent_line via motion_apply_count
+;                                      BEFORE their tail-JP parser_clear.
+;                                 Out: pending_operator = 'd' → JP op_dd
+;                                      pending_operator = 'y' → JP op_yy
+;                                      pending_operator = '>' → JP
+;                                                            op_indent_line
+;                                      pending_operator = '<' → JP
+;                                                            op_dedent_line
+;                                      else ('c' — cc) → status =
+;                                      msg_not_implemented; tail-JP
+;                                      parser_clear. All real handlers
+;                                      tail-JP parser_clear; the doubled-
+;                                      op consumes its entire pending-
+;                                      state on every branch.
+;                                 Trashes: A, BC, DE, HL, F.
+;                                 Calls:   op_dd (JP), op_yy (JP),
+;                                          op_indent_line (JP),
+;                                          op_dedent_line (JP),
+;                                          status_set_message (cc
+;                                          fall-through arm),
+;                                          parser_clear (fall-through
+;                                          tail-JP).
 ;
 ; Dependencies:
 ;   inc/state.inc    (count_accumulator, pending_operator,
 ;                     pending_motion_prefix)
 ;   src/statusln.asm (status_set_message + msg_not_implemented —
-;                     for parser_doubled_operator_stub)
+;                     for the c/>/< fall-through arm of
+;                     parser_doubled_operator_stub)
 ;   src/motions.asm  (motion_0, motion_gg — forward-referenced
 ;                     from parser_handle_digit's leading-zero arm
 ;                     and parser_handle_motion_prefix's doubled-g
 ;                     arm; resolved by sjasmplus's two-pass model
 ;                     because motions.asm INCLUDEs after parser.asm
+;                     in vibe.asm's AR25 chain)
+;   src/edits.asm    (op_dd, op_yy — forward-referenced from the
+;                     d / y arms of parser_doubled_operator_stub;
+;                     resolved by sjasmplus's two-pass model
+;                     because edits.asm INCLUDEs after parser.asm
 ;                     in vibe.asm's AR25 chain)
 ; ============================================================
 
@@ -176,6 +229,7 @@ parser_clear:
     XOR     A
     LD      (pending_operator), A
     LD      (pending_motion_prefix), A
+    LD      (pending_motion_inclusive), A   ; Story 2.11 — cleanup of inclusive flag
     LD      HL, 0
     LD      (count_accumulator), HL
     RET
@@ -435,29 +489,55 @@ parser_dispatch:
 
 
 ;; ============================================================
-;; --- Epic-1 stub handler ---
+;; --- Doubled-operator dispatcher (FR40; Story 2.10) ---
 ;; ============================================================
-; Surfaces msg_not_implemented via the AR12 status funnel and
-; tail-JPs to parser_clear so the pending-state is consumed.
-; Story 2.10 will land the real doubled-operator handlers
-; (dd / yy / cc / >> / <<). Story 2.6 retired the leading-`0`
-; and `gg` Epic-1 sibling placeholders.
+; Reads pending_operator (set by the prior parser_handle_operator
+; call on the first `d` / `y` / `c` / `>` / `<` press) and branches:
+;   'd' → JP op_dd          (Story 2.10 — line delete)
+;   'y' → JP op_yy          (Story 2.10 — line yank)
+;   '>' → JP op_indent_line (Story 2.11 — line indent — FR40)
+;   '<' → JP op_dedent_line (Story 2.11 — line dedent — FR40)
+;   else ('c' = cc, out of MVP scope per epic spec) → status =
+;        msg_not_implemented; tail-JP parser_clear.
+;
+; State-discipline (critical — see module-level doc):
+; op_dd / op_yy both read count_accumulator (via motion_apply_count)
+; BEFORE tail-JPing parser_clear. A future "consistency cleanup"
+; that factored parser_clear into a common prelude HERE (before
+; the JP op_dd / JP op_yy) would silently break `5dd` / `5yy` —
+; count would be 0 by the time the handler tried to use it. Same
+; shape as the Story 2.6 motion_gg resolution (deferred-work.md:95).
+;
+; The symbol name `parser_doubled_operator_stub` is retained for
+; AR25 INCLUDE-chain stability (caller site at parser_handle_operator
+; uses `JP parser_doubled_operator_stub` — no rename ripple).
 
 ; ----------------------------------------------------------------
 ; parser_doubled_operator_stub
-; Epic 1 placeholder for doubled-operator commands dd / yy / cc /
-; >> / << (FR40). Story 2.10 replaces with the real handler.
-; Tail-JPs to parser_clear so the doubled-op dispatch is atomic
-; from the caller's perspective (status set + state cleared).
-;
-; In:      (none)
-; Out:     status line = "not yet implemented";
-;          count_accumulator / pending_operator /
-;          pending_motion_prefix all = 0 (via parser_clear)
-; Trashes: A, BC, DE, HL, F
-; Calls:   status_set_message; parser_clear (tail-JP)
+; In:      pending_operator already set by parser_handle_operator;
+;          count_accumulator MAY be non-zero (preserved across the
+;          dispatch and read by op_dd / op_yy via motion_apply_count
+;          BEFORE their tail-JP parser_clear).
+; Out:     'd' arm — JP op_dd (tail-JPs parser_clear at op_dd's end).
+;          'y' arm — JP op_yy (tail-JPs parser_clear at op_yy's end).
+;          c/>/< fall-through — status = "not yet implemented";
+;          parser state zeroed via tail-JP parser_clear.
+; Trashes: A, BC, DE, HL, F (matches op_dd / op_yy clobbers).
+; Calls:   op_dd (JP — d arm); op_yy (JP — y arm);
+;          status_set_message + parser_clear (c/>/< fall-through arm).
 ; ----------------------------------------------------------------
 parser_doubled_operator_stub:
+    LD      A, (pending_operator)
+    CP      'd'
+    JP      Z, op_dd
+    CP      'y'
+    JP      Z, op_yy
+    CP      '>'
+    JP      Z, op_indent_line           ; Story 2.11 — `>>` / `N>>`
+    CP      '<'
+    JP      Z, op_dedent_line           ; Story 2.11 — `<<` / `N<<`
+    ;; `cc` (doubled `c`) fall-through arm — out of MVP scope per
+    ;; the epic spec. msg_not_implemented surfaces; parser cleared.
     LD      HL, msg_not_implemented
     XOR     A
     CALL    status_set_message
