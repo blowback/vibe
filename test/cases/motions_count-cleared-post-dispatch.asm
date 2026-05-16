@@ -3,22 +3,33 @@
 ; Purpose: AC6 — counted motion's tail-JP parser_clear zeroes
 ;          count, and the next unprefixed motion moves by 1 (not
 ;          by the prior count). Buffer "abcdefg" (7 bytes, no LF).
-;          Sequence:
-;            Subtest 1: cursor=6, count=5; motion_h → cursor=1
-;                       (walks 5 steps left within single line).
-;            Subtest 2: count_accumulator == 0 after Subtest 1.
-;            Subtest 3: cursor=1, count=0 (state from Subtest 1);
-;                       motion_h → cursor=0 (moved by 1, NOT by
-;                       prior 5; motion_apply_count's count==0
-;                       default-to-1 path is the load-bearing
-;                       branch).
+;          Fixture chosen so the by-1 result and the by-N result
+;          land on DIFFERENT cursor offsets — required to make
+;          Subtest 3 genuinely pin the "moves by 1, not by 3"
+;          invariant (an earlier design with count=5 and cursor=6
+;          collided both outcomes at cursor=0 via the BOF clamp).
 ;
-; AC reference: AC6 (story 2.7 Sub 3.3).
+;          Sequence:
+;            Subtest 1: cursor=6, count=3; motion_h → cursor=3
+;                       (vanilla count-walk left within the
+;                       single line).
+;            Subtest 2: count_accumulator == 0 after Subtest 1
+;                       (parser_clear tail-JP cleared it).
+;            Subtest 3: cursor=3, count=0 (state from Subtest 1);
+;                       motion_h → cursor=2 (moved by 1, via
+;                       motion_apply_count's count==0 → BC=1
+;                       default; NOT by 3 which would land at
+;                       cursor=0).
+;
+; AC reference: AC6 (story 2.7 Sub 3.3). Reworked by code review
+;               2026-05-16 patch P1 — original fixture cursor=6
+;               count=5 made Subtest 3 vacuous (both moved-by-1
+;               and moved-by-5 landed at cursor=0).
 ;
 ; Sentinel codes at 0xCFFE on failure (TH1):
-;   0x80 — Subtest 1: cursor_offset != 1
+;   0x80 — Subtest 1: cursor_offset != 3
 ;   0x81 — Subtest 2: count_accumulator not cleared
-;   0x82 — Subtest 3: cursor_offset != 0 (second motion_h moved by 0 or by 5)
+;   0x82 — Subtest 3: cursor_offset != 2 (second motion_h moved by 0 or by 3)
 ; ============================================================
 
     INCLUDE "../../inc/equates.inc"
@@ -44,15 +55,15 @@
 
     LD      HL, 6
     LD      (cursor_offset), HL
-    LD      HL, 5
+    LD      HL, 3
     LD      (count_accumulator), HL
 
-    ;; Subtest 1: counted motion_h with count=5.
+    ;; Subtest 1: counted motion_h with count=3.
     LD      A, 'h'
     CALL    motion_h
 
     LD      HL, (cursor_offset)
-    LD      DE, 1
+    LD      DE, 3
     OR      A
     SBC     HL, DE
     JR      Z, .ok_cursor1
@@ -73,14 +84,17 @@
 .ok_count:
 
     ;; Subtest 3: second motion_h (with count=0) must move by 1.
+    ;; cursor=3 → cursor=2 (by 1). If count was stuck at 3, motion_h
+    ;; would walk 3→2→1→0 and land at cursor=0 — distinguishable.
     LD      A, 'h'
     CALL    motion_h
 
     LD      HL, (cursor_offset)
-    LD      A, H
-    OR      L
+    LD      DE, 2
+    OR      A
+    SBC     HL, DE
     JR      Z, .ok_cursor2
-    LD      A, L
+    LD      A, (cursor_offset)
     LD      B, A
     LD      A, 0x82
     JP      test_fail

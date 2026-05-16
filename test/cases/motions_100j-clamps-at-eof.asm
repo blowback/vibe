@@ -4,9 +4,10 @@
 ;          is 10 lines (no trailing LF, so the P5 phantom-past-LF
 ;          case is exercised separately by motions_j-past-trailing-lf).
 ;          Cursor at start of line 5 (offset 16), count=100;
-;          motion_j walks 4 lines down then the next-line guard
-;          fires (no next line past line 10) → cursor at offset
-;          36 (start of line 10). Count cleared via parser_clear.
+;          motion_j walks 5 lines down (line 5→6→7→8→9→10) then
+;          the next-line guard fires (no next line past line 10)
+;          → cursor at offset 36 (start of line 10). Count cleared
+;          via parser_clear.
 ;
 ;          Fixture: "L01\nL02\n...\nL10" (39 bytes). Line N starts
 ;          at offset 4*(N-1).

@@ -284,7 +284,9 @@ motion_l:
 ;   intermediate line but still uses col=4 against the wider
 ;   line two steps later — vi-faithful "sticky column" semantics.
 ;
-; Per-step algorithm (motions_col is the entry-time column):
+; Per-step algorithm (motions_col holds entry-time column,
+; captured ONCE pre-loop by the entry preamble below — see
+; STICKY COLUMN INVARIANT above):
 ;   1. current_eol = line_end(cursor)
 ;   2. If current_eol is past EOF (no LF before EOF), stop — no
 ;      next line (BH2 last-line clamp).
@@ -297,7 +299,7 @@ motion_l:
 ;       the rightmost valid column in an N-char line is N-1. An
 ;       empty line — length 0 — has only one valid position, the
 ;       LF/EOF at line_start itself.)
-;   7. new_col = min(motions_col, clamp_col)
+;   7. new_col = min(motions_col, clamp_col)    [motions_col = entry col]
 ;   8. cursor = next_line_start + new_col       [commit]
 ;
 ; In:      A = 'j' (MC4; ignored).

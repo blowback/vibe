@@ -14,6 +14,11 @@
 ; Sentinel codes at 0xCFFE on failure (TH1):
 ;   0x80 — cursor_offset != 6 (start of line 2)
 ;   0x81 — count_accumulator != 0
+;   0x82 — pending_motion_prefix not cleared (motion_0's tail-JP
+;          parser_clear didn't fire). Pre-seeded to 'g' (0x67) so
+;          the count==0 assertion (vacuous when count was already 0)
+;          is supplemented by a genuine parser_clear chain check.
+;          Added by code review 2026-05-16 patch P2.
 ; ============================================================
 
     INCLUDE "../../inc/equates.inc"
@@ -29,7 +34,9 @@
     LD      (count_accumulator), A
     LD      (count_accumulator + 1), A
     LD      (pending_operator), A
-    LD      (pending_motion_prefix), A
+
+    LD      A, 'g'                      ; pre-seed nonzero so the
+    LD      (pending_motion_prefix), A  ; parser_clear chain check is genuine
 
     CALL    gapbuf_init
     LD      HL, .payload
@@ -64,6 +71,18 @@
     LD      A, 0x81
     JP      test_fail
 .ok_count:
+
+    ;; Subtest 3: pending_motion_prefix cleared (genuine parser_clear
+    ;; chain check — the count assertion above is vacuous when count
+    ;; was already 0 entering, but pending_motion_prefix='g' on entry
+    ;; only zeroes if motion_0's tail-JP parser_clear actually ran).
+    LD      A, (pending_motion_prefix)
+    OR      A
+    JR      Z, .ok_prefix
+    LD      B, A
+    LD      A, 0x82
+    JP      test_fail
+.ok_prefix:
 
     JP      test_pass
 
