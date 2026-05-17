@@ -134,6 +134,7 @@
     INCLUDE "../../src/edits.asm"     ; Story 2.8: dispatch_normal forward-references edits_*, dispatch_insert table grows, unbound_insert tail-JPs edits_insert_literal
     INCLUDE "../../src/exline.asm"
     INCLUDE "../../src/fileio.asm"
+    INCLUDE "../../src/undo.asm"
 
 ;; ----- input_loop stub (resolves bdos_error_funnel symbol) -----
     INCLUDE "../inc/test_input_loop_stub.inc"

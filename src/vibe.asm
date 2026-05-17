@@ -167,6 +167,21 @@
 ; from init.
     INCLUDE "fileio.asm"
 
+;; --- Single-level undo (FR45, FR46; undo.asm — Story 2.13) ---
+; AR25 order: fileio -> undo -> input_loop (the long-planned final
+; module slot per architecture.md:945). undo.asm lands the FR45 +
+; FR46 register state-machine (op_undo replay handler + the shared
+; record helpers invoked from every mutating handler in edits.asm
+; and from the INSERT-session exit hooks in dispatch.asm + edits.asm).
+; op_undo is forward-referenced by dispatch_normal's new `'u'` entry
+; in src/dispatch.asm; undo_record_* / undo_clear / undo_insert_exit_record
+; are forward-referenced by the hook sites in src/edits.asm and
+; src/dispatch.asm. All resolve via sjasmplus's two-pass model.
+; First story to extend the AR25 INCLUDE chain since the chain
+; stabilised at Story 2.2's fileio.asm — undo.asm has always been
+; the planned final module per architecture.md:945 / Pillar 47.
+    INCLUDE "undo.asm"
+
 ;; --- Main input loop (Story 1.12 / 2.1) ---
 ; Main input loop. Falls into here from `init_cold_start`
 ; (src/init.asm) and is re-entered by `bdos_error_funnel`'s

@@ -644,6 +644,13 @@ edits_dirty_and_redraw:
 ; Calls:   parser_clear (tail-JP).
 ; ----------------------------------------------------------------
 edits_overflow_to_normal:
+    ;; Story 2.13 INSERT-session exit hook (FR45; B2). mode_byte is
+    ;; definitely MODE_INSERT on this path (only edits_insert_literal /
+    ;; edits_insert_newline call here), so no CP MODE_INSERT guard —
+    ;; just invoke the recorder. Will record an INSERT entry (partial
+    ;; session capped by overflow) iff any bytes landed; otherwise
+    ;; clears the entry per Q2 Option A.
+    CALL    undo_insert_exit_record
     LD      A, MODE_NORMAL
     LD      (mode_byte), A
     JP      parser_clear
@@ -787,12 +794,46 @@ edits_insert_newline:
 edits_delete_char:
     CALL    motion_apply_count          ; BC = N (default 1)
     PUSH    BC                          ; [N]  — for did-delete detection
+    ;; Story 2.13 FR45 hook (capture-per-iter pattern). Stash the original
+    ;; cursor for undo_position; initialise the per-iter write pointer
+    ;; into undo_buffer. Each successful gapbuf_delete iter writes the
+    ;; about-to-be-deleted byte at (edits_x_undo_write_ptr) and advances.
+    ;; At .exit_loop, deletes_done = (edits_x_undo_write_ptr - undo_buffer)
+    ;; or equivalently N - BC. We use the simpler N-BC form below.
+    LD      HL, (cursor_offset)
+    LD      (edits_x_undo_origin), HL
+    LD      HL, undo_buffer
+    LD      (edits_x_undo_write_ptr), HL
 .loop:
     LD      HL, (cursor_offset)
     CALL    motion_byte_at_logical      ; A = byte at cursor; CF=1 past EOF; HL preserved
     JR      C, .exit_loop               ; past EOF (or pre-check past-EOF on iter 1) → BREAK
     CP      0x0A
     JR      Z, .exit_loop               ; on LF (or pre-check LF on iter 1) → BREAK
+    ;; Story 2.13 hook: capture byte-about-to-be-deleted. Saved by-pointer
+    ;; into undo_buffer. Capacity check: if write_ptr >= undo_buffer + 256
+    ;; we silently skip the capture (the entry will land as TOO_LARGE in
+    ;; the .exit_loop header write if the total exceeds the payload).
+    ;; A holds the byte (from motion_byte_at_logical) and is preserved
+    ;; via OR A's self-OR (flags clobbered, A unchanged) so we can do the
+    ;; bounds compute without PUSH AF (which would trap the wrong flags).
+    PUSH    HL                          ; preserve original cursor for the cursor-bounce
+    PUSH    BC                          ; preserve remaining count
+    LD      HL, (edits_x_undo_write_ptr)
+    LD      DE, undo_buffer + UNDO_PAYLOAD_SIZE
+    EX      DE, HL                      ; HL = end, DE = write_ptr
+    OR      A                           ; CF=0 (A unchanged — self-OR)
+    SBC     HL, DE                      ; HL = end - write_ptr
+    EX      DE, HL                      ; HL = write_ptr; DE = end - write_ptr
+    JR      Z, .x_no_capture            ; write_ptr == end → skip
+    BIT     7, D                        ; D bit 7 set iff (end-write_ptr) < 0 → write_ptr > end
+    JR      NZ, .x_no_capture
+    LD      (HL), A                     ; undo_buffer[k] := A
+    INC     HL
+    LD      (edits_x_undo_write_ptr), HL
+.x_no_capture:
+    POP     BC
+    POP     HL                          ; HL = original cursor
     INC     HL
     LD      (cursor_offset), HL         ; cursor-bounce: cursor advances past the byte
     PUSH    BC                          ; [N] [BC] — gapbuf_delete trashes BC
@@ -809,6 +850,25 @@ edits_delete_char:
     LD      A, H
     OR      L
     JR      Z, .noop_clear              ; 0 deletes — skip dirty + clamp
+    ;; Story 2.13 FR45 hook: write the DELETE entry header. Payload bytes
+    ;; are already in undo_buffer from the per-iter captures (or skipped
+    ;; per the capacity check — in which case we should record TOO_LARGE).
+    ;; Detect TOO_LARGE by comparing deletes_done to UNDO_PAYLOAD_SIZE.
+    LD      B, H
+    LD      C, L                        ; BC = deletes_done
+    PUSH    BC                          ; preserve for clamp-phase use
+    PUSH    HL                          ; preserve N - BC for the size compare
+    LD      HL, UNDO_PAYLOAD_SIZE
+    OR      A
+    SBC     HL, BC                      ; CF=1 iff BC > UNDO_PAYLOAD_SIZE
+    POP     HL
+    LD      A, UNDO_KIND_DELETE
+    JR      NC, .x_size_ok
+    LD      A, UNDO_KIND_TOO_LARGE
+.x_size_ok:
+    POP     BC                          ; BC = deletes_done
+    LD      HL, (edits_x_undo_origin)
+    CALL    undo_write_header
     ;; --- Post-clamp (AC1 / AC2 / AC4 EOL-clamp) ---
     LD      HL, (cursor_offset)
     LD      A, H
@@ -1081,10 +1141,18 @@ op_dd:
     OR      C
     JP      Z, parser_clear
 
+    ;; Story 2.13 FR45 hook: record DELETE entry BEFORE the yank-copy.
+    ;; The gap-buffer bytes are still at pre-delete logical positions;
+    ;; undo recording is independent of yank capacity (so a yank-too-large
+    ;; refusal does NOT also block undo). undo_record_delete handles
+    ;; both BC <= 256 (copy payload) and BC > 256 (record TOO_LARGE
+    ;; without partial payload).
+    PUSH    HL                          ; [delete_start]
+    PUSH    BC                          ; [delete_start][total_bytes]
+    CALL    undo_record_delete
+    POP     BC
+    POP     HL
     ;; Attempt yank-copy. Preserve HL/BC for the subsequent delete.
-    ;; (Story 2.13 FR45 undo hook site: HERE — before edits_copy_to_yank.
-    ;;  The gap-buffer bytes are still at their pre-delete logical
-    ;;  positions, and undo recording is independent of yank capacity.)
     PUSH    HL                          ; [delete_start]
     PUSH    BC                          ; [delete_start][total_bytes]
     LD      A, KIND_LINE                ; Story 2.11: parameterised yank kind
@@ -1364,8 +1432,14 @@ op_compose_d:
     JR      Z, .cd_no_bump
     INC     BC
 .cd_no_bump:
-    ;; Yank-copy attempt (Story 2.13 FR45 undo hook site: HERE —
-    ;; gap-buffer bytes still at pre-delete logical positions).
+    ;; Story 2.13 FR45 hook: record DELETE entry BEFORE the yank-copy.
+    ;; Gap-buffer bytes still at pre-delete logical positions.
+    PUSH    HL                          ; [start]
+    PUSH    BC                          ; [start][bytes]
+    CALL    undo_record_delete
+    POP     BC
+    POP     HL
+    ;; Yank-copy attempt.
     PUSH    HL                          ; [start]
     PUSH    BC                          ; [start][bytes]
     LD      A, KIND_CHAR                ; Story 2.11 first writer of KIND_CHAR
@@ -1496,6 +1570,19 @@ op_compose_c:
     JR      Z, .cc_no_bump
     INC     BC
 .cc_no_bump:
+    ;; Story 2.13 FR45 hook (Q3 Option A two-phase REPLACE — phase 1).
+    ;; Record DELETE entry with the OLD content saved in undo_buffer;
+    ;; phase 2 (in undo_insert_exit_record at INSERT exit) upgrades the
+    ;; entry kind to UNDO_KIND_REPLACE and writes the new-content
+    ;; length into undo_length + the old length into undo_aux_length.
+    ;; If the user Escs from INSERT with 0 chars typed (net=0), the
+    ;; DELETE entry stays as-is — `u` restores the original content.
+    PUSH    HL
+    PUSH    BC
+    CALL    undo_record_delete
+    POP     BC
+    POP     HL
+    ;; Yank-copy.
     PUSH    HL
     PUSH    BC
     LD      A, KIND_CHAR
@@ -1576,6 +1663,17 @@ op_compose_indent:
     EX      DE, HL                      ; DE = promoted_end
     POP     HL                          ; HL = promoted_start
 .ci_walk:
+    ;; Story 2.13 FR45 hook (Q6 Option B INDENT_WALK). Pre-clear any
+    ;; prior undo entry (defensive — `dd >>u` invariant: every mutating
+    ;; op records SOMETHING; the prior dd entry must not replay). On
+    ;; a real change, the post-walk record_indent_walk overwrites EMPTY.
+    ;; Stash pre-walk (start, end) into module-local DEFWs so we can
+    ;; record after the walk (the walk trashes HL and DE).
+    LD      (edits_indent_undo_start), HL
+    EX      DE, HL                      ; HL = end
+    LD      (edits_indent_undo_end), HL
+    EX      DE, HL                      ; restore HL = start, DE = end
+    CALL    undo_clear
     XOR     A                           ; A=0 → indent mode (insert INDENT_BYTE)
     CALL    edits_indent_walk
     ;; Restore cursor to entry.
@@ -1584,7 +1682,10 @@ op_compose_indent:
     ;; Mark dirty iff at least one line changed.
     LD      A, (edits_indent_walk_dirty)
     OR      A
-    JP      Z, parser_clear             ; no change — silent (matches dedent-no-op spec)
+    JP      Z, parser_clear             ; no change — silent; undo stays EMPTY
+    ;; Record INDENT_WALK with pre-walk (start, end-start).
+    LD      A, UNDO_KIND_INDENT_WALK
+    CALL    edits_record_walk           ; shared helper (with kind in A)
     CALL    edits_dirty_and_redraw
     JP      parser_clear
 
@@ -1635,6 +1736,13 @@ op_compose_dedent:
     EX      DE, HL
     POP     HL
 .cdd_walk:
+    ;; Story 2.13 hook: stash + pre-clear + walk + post-record. Same shape
+    ;; as op_compose_indent.
+    LD      (edits_indent_undo_start), HL
+    EX      DE, HL
+    LD      (edits_indent_undo_end), HL
+    EX      DE, HL
+    CALL    undo_clear
     LD      A, 1                        ; A=1 → dedent mode
     CALL    edits_indent_walk
     LD      HL, (motions_compose_entry)
@@ -1642,6 +1750,8 @@ op_compose_dedent:
     LD      A, (edits_indent_walk_dirty)
     OR      A
     JP      Z, parser_clear
+    LD      A, UNDO_KIND_DEDENT_WALK
+    CALL    edits_record_walk
     CALL    edits_dirty_and_redraw
     JP      parser_clear
 
@@ -1683,6 +1793,12 @@ op_indent_line:
     ADD     HL, BC
     EX      DE, HL                      ; DE = promoted_end
     POP     HL                          ; HL = line_start
+    ;; Story 2.13 hook: stash + pre-clear.
+    LD      (edits_indent_undo_start), HL
+    EX      DE, HL
+    LD      (edits_indent_undo_end), HL
+    EX      DE, HL
+    CALL    undo_clear
     XOR     A                           ; indent mode
     CALL    edits_indent_walk
     POP     HL                          ; [entry_cursor] → HL
@@ -1690,6 +1806,8 @@ op_indent_line:
     LD      A, (edits_indent_walk_dirty)
     OR      A
     JP      Z, parser_clear
+    LD      A, UNDO_KIND_INDENT_WALK
+    CALL    edits_record_walk
     CALL    edits_dirty_and_redraw
     JP      parser_clear
 .il_empty:
@@ -1725,6 +1843,12 @@ op_dedent_line:
     ADD     HL, BC
     EX      DE, HL
     POP     HL
+    ;; Story 2.13 hook: stash + pre-clear.
+    LD      (edits_indent_undo_start), HL
+    EX      DE, HL
+    LD      (edits_indent_undo_end), HL
+    EX      DE, HL
+    CALL    undo_clear
     LD      A, 1                        ; dedent mode
     CALL    edits_indent_walk
     POP     HL
@@ -1732,6 +1856,8 @@ op_dedent_line:
     LD      A, (edits_indent_walk_dirty)
     OR      A
     JP      Z, parser_clear
+    LD      A, UNDO_KIND_DEDENT_WALK
+    CALL    edits_record_walk
     CALL    edits_dirty_and_redraw
     JP      parser_clear
 .dl_empty:
@@ -1778,6 +1904,16 @@ edits_indent_walk:
     XOR     A
     LD      (edits_indent_walk_dirty), A
 .iw_step:
+    ;; Stash current DE so callers (record helpers) can read the
+    ;; post-walk effective end at exit. DE is adjusted +1 per
+    ;; indent insert and -1 per dedent delete; storing it at every
+    ;; loop head + after each mutation guarantees the cell holds
+    ;; the right value on every RET path. Required by Q6 Option B
+    ;; replay correctness (Story 2.13): the inverse walk's bound
+    ;; must reflect the post-walk line stride, not the pre-walk
+    ;; one — otherwise the inverse over-walks (indent replay grows
+    ;; bound; dedent replay shrinks it).
+    LD      (edits_indent_walk_end), DE
     ;; Done if HL >= DE.
     PUSH    HL
     OR      A
@@ -1796,6 +1932,7 @@ edits_indent_walk:
     POP     DE
     RET     C                           ; full — halt walk; msg_file_too_large surfaced
     INC     DE                          ; promoted_end shifts by +1
+    LD      (edits_indent_walk_end), DE ; re-stash post-mutation end (Q6 fix)
     LD      A, 1
     LD      (edits_indent_walk_dirty), A
     JR      .iw_advance
@@ -1815,6 +1952,7 @@ edits_indent_walk:
     CALL    gapbuf_delete
     POP     DE
     DEC     DE                          ; promoted_end shifts by -1
+    LD      (edits_indent_walk_end), DE ; re-stash post-mutation end (Q6 fix)
     LD      A, 1
     LD      (edits_indent_walk_dirty), A
 .iw_advance:
@@ -1985,6 +2123,15 @@ edits_paste_yank_bytes:
 ;          parser_clear (tail-JP every path).
 ; ----------------------------------------------------------------
 op_paste:
+    ;; Story 2.13 FR45 hook: pre-clear undo + zero the per-iter bytes
+    ;; accumulator. Every mutating op records SOMETHING; the early no-op
+    ;; exits (empty yank, KIND_BLOCK, KIND_LINE prelude overflow with 0
+    ;; bytes landed, KIND_CHAR 0 bytes landed) leave the entry as EMPTY
+    ;; via this pre-clear. Real mutations write a fresh INSERT entry at
+    ;; .commit via the accumulator + start-capture.
+    CALL    undo_clear
+    LD      HL, 0
+    LD      (edits_paste_undo_bytes), HL
     ;; Step 1: empty-yank guard. Silent no-op (vi convention; Q2 pin).
     LD      HL, (yank_length)
     LD      A, H
@@ -2027,11 +2174,13 @@ op_paste:
     ;; Save pre-paste cursor (after the optional advance) for partial-
     ;; paste cursor placement / zero-bytes-landed detection.
     LD      HL, (cursor_offset)
+    LD      (edits_paste_undo_start), HL ; Story 2.13 hook: insertion-start for undo
     PUSH    HL                          ; [raw_entry][pre_cursor]
 .pc_count_loop:
     PUSH    BC                          ; [raw_entry][pre_cursor][count]
-    CALL    edits_paste_yank_bytes      ; CF=1 on overflow
+    CALL    edits_paste_yank_bytes      ; CF=1 on overflow; HL = bytes-this-iter
     POP     BC
+    CALL    edits_paste_acc             ; accumulate HL into edits_paste_undo_bytes; CF preserved
     JR      C, .pc_partial
     DEC     BC
     LD      A, B
@@ -2096,11 +2245,18 @@ op_paste:
     CALL    gapbuf_insert               ; cursor advances to fl+1 on success
     JR      C, .pl_overflow_no_content
 .pl_count_setup:
+    ;; Story 2.13 hook: insertion-start for undo (the LF-prelude has
+    ;; positioned cursor at the start of where the inserted line(s)
+    ;; will land — either past an existing LF or past the just-
+    ;; inserted explicit LF).
+    LD      HL, (cursor_offset)
+    LD      (edits_paste_undo_start), HL
     CALL    motion_apply_count          ; BC = N (re-read; count still preserved)
 .pl_count_loop:
     PUSH    BC                          ; preserve count across helper
-    CALL    edits_paste_yank_bytes      ; CF=1 on overflow
+    CALL    edits_paste_yank_bytes      ; CF=1 on overflow; HL = bytes-this-iter
     POP     BC
+    CALL    edits_paste_acc             ; accumulate HL; CF preserved
     JR      C, .pl_partial
     DEC     BC
     LD      A, B
@@ -2146,15 +2302,133 @@ op_paste:
     JP      parser_clear
 
 .commit:
+    ;; Story 2.13 FR45 hook: record INSERT entry if we actually inserted.
+    ;; Zero-byte paths bypass .commit (the .pc_partial 0-bytes branch and
+    ;; .pl_overflow_no_content path both JP parser_clear directly), so
+    ;; reaching here implies edits_paste_undo_bytes >= 1 in practice. The
+    ;; explicit 0 guard is defensive (and small).
+    LD      BC, (edits_paste_undo_bytes)
+    LD      A, B
+    OR      C
+    JR      Z, .commit_no_record
+    LD      HL, (edits_paste_undo_start)
+    CALL    undo_record_insert
+.commit_no_record:
     CALL    edits_dirty_and_redraw      ; buffer_dirty=1 + render_mark_all_dirty
     JP      parser_clear
 
 
 ;; ============================================================
+;; --- Internal helper: edits_paste_acc (Story 2.13 op_paste hook) -
+;; ============================================================
+
+; ----------------------------------------------------------------
+; edits_paste_acc
+; Accumulate HL (bytes inserted this outer iter, as returned by
+; edits_paste_yank_bytes in HL on both CF=0 success and CF=1 overflow
+; paths) into edits_paste_undo_bytes. Preserves CF + every register
+; (input HL is consumed; all others restored via PUSH/POP) so the
+; caller's JR C branch decision is unaffected.
+;
+; In:      HL = bytes-this-iter; CF = caller's return code from
+;          edits_paste_yank_bytes.
+; Out:     edits_paste_undo_bytes += HL; CF + BC + DE + A preserved.
+;          HL clobbered.
+; Trashes: HL.
+; ----------------------------------------------------------------
+edits_paste_acc:
+    PUSH    AF                          ; preserve A + CF across the math
+    PUSH    DE                          ; preserve DE
+    EX      DE, HL                      ; DE = bytes-this-iter
+    LD      HL, (edits_paste_undo_bytes)
+    ADD     HL, DE
+    LD      (edits_paste_undo_bytes), HL
+    POP     DE
+    POP     AF                          ; restore CF (and A)
+    RET
+
+
+;; ============================================================
 ;; --- Module-local scratch (Story 2.11 compose layer) ---
 ;; ============================================================
-; Both cells written by edits_indent_walk. mode is set on entry from A;
+; Cells written by edits_indent_walk. mode is set on entry from A;
 ; dirty is reset at entry and set by each successful insert/delete.
 ; Caller reads dirty to decide whether to invoke edits_dirty_and_redraw.
+; end is stashed at the top of every iteration AND after every per-line
+; mutation, so on every RET path it holds the post-walk effective end
+; (= start + post-walk byte length). Required by Story 2.13 Q6 Option B
+; replay correctness: the inverse walk's bound must reflect the post-
+; walk line stride. edits_record_walk reads this cell (not the caller-
+; stashed pre-walk end) to compute the recorded length.
 edits_indent_walk_mode:    DEFB 0
 edits_indent_walk_dirty:   DEFB 0
+edits_indent_walk_end:     DEFW 0
+
+
+;; ============================================================
+;; --- Internal helper: edits_record_walk (Story 2.13 Q6 Option B) -
+;; ============================================================
+
+; ----------------------------------------------------------------
+; edits_record_walk
+; Shared post-walk record helper for op_compose_indent / _dedent /
+; op_indent_line / op_dedent_line. Reads the stashed start from
+; edits_indent_undo_start (caller-stashed pre-walk start) and the
+; POST-walk end from edits_indent_walk_end (set by edits_indent_walk
+; itself at every loop iter and after every per-line mutation),
+; computes length = post_end - start, tail-CALLs the per-kind
+; record helper. Saves ~6 B per call site via the factor-out
+; (4 call sites × ~6 B each minus the ~12 B helper body = ~12 B
+; net).
+;
+; Q6 Option B fix (Story 2.13): the original implementation read
+; edits_indent_undo_end (caller-stashed PRE-walk end), which caused
+; dedent-undo to over-indent (the inverse walk's indent expanded
+; the bound, taking the walk into lines beyond the originally-
+; dedented range). Reading the post-walk end makes the inverse
+; walk self-correct: indent replay grows DE back to pre-dedent
+; size; dedent replay shrinks DE back to pre-indent size.
+;
+; In:      A = kind (UNDO_KIND_INDENT_WALK or UNDO_KIND_DEDENT_WALK).
+; Out:     undo register populated per the kind's contract.
+; Trashes: A, BC, DE, HL, F.
+; Calls:   undo_record_indent_walk / undo_record_dedent_walk
+;          (selected by the A argument; both forward to
+;          undo_write_header). The branch is just a CP test.
+; ----------------------------------------------------------------
+edits_record_walk:
+    PUSH    AF                          ; preserve kind across the math
+    LD      HL, (edits_indent_walk_end) ; POST-walk end (Q6 fix)
+    LD      DE, (edits_indent_undo_start)
+    OR      A
+    SBC     HL, DE                      ; HL = end - start = length
+    LD      B, H
+    LD      C, L                        ; BC = length
+    EX      DE, HL                      ; HL = start; DE = length (now stale)
+    POP     AF                          ; A = kind
+    JP      undo_write_header           ; tail-JP: kind/position/length
+
+
+;; --- Story 2.13 undo hook scratch ---
+; Module-local cells supporting the FR45 undo hook sites. Same pattern
+; as edits_indent_walk_mode/dirty + motions_compose_entry: per-handler
+; scratch that doesn't live in state.inc.
+;
+; edits_x_undo_origin / _write_ptr: edits_delete_char's capture-per-iter
+; pattern (Story 2.13 AC7 hook 1). Origin = pre-loop cursor (= undo_position);
+; write_ptr advances per captured byte; deletes_done = (write_ptr -
+; undo_buffer) on the .exit_loop path.
+;
+; edits_paste_undo_start / _undo_bytes: op_paste's hook at .commit
+; (Story 2.13 AC7 hook 6). Captured at the SECOND PUSH (after pre-paste
+; cursor advance for KIND_CHAR / after entry_cursor's line-end+1 walk
+; for KIND_LINE), so insertion_start = the very first byte op_paste's
+; inner loop will write. _bytes accumulates per-iter from
+; edits_paste_yank_bytes' returned HL count summed across the outer
+; count loop.
+edits_x_undo_origin:        DEFW 0
+edits_x_undo_write_ptr:     DEFW 0
+edits_paste_undo_start:     DEFW 0
+edits_paste_undo_bytes:     DEFW 0
+edits_indent_undo_start:    DEFW 0
+edits_indent_undo_end:      DEFW 0

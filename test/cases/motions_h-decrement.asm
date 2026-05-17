@@ -138,6 +138,7 @@
     INCLUDE "../../src/edits.asm"
     INCLUDE "../../src/exline.asm"
     INCLUDE "../../src/fileio.asm"
+    INCLUDE "../../src/undo.asm"
 
 ;; ----- init_teardown stub -----
     INCLUDE "../inc/test_teardown_stub.inc"

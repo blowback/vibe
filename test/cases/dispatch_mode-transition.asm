@@ -286,6 +286,7 @@ BIOS_CONOUT EQU test_bios_conout
     INCLUDE "../../src/gapbuf.asm"
     INCLUDE "../../src/exline.asm"
     INCLUDE "../../src/fileio.asm"
+    INCLUDE "../../src/undo.asm"
     INCLUDE "../../src/render.asm"
 
 ;; ----- input_loop stub (resolves bdos_error_funnel symbol) -----

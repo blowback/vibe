@@ -101,6 +101,33 @@ static_off            =   static_off + 2
 input_tick_counter    EQU static_data_base + static_off
 static_off            =   static_off + 2
 
+;; --- Undo register header (Story 2.13; FR45 / FR46) ---
+; 7 bytes of header for the single-level undo entry. The 256-byte
+; payload slot (undo_buffer) is declared further down with the
+; other buffers — physically separate, deliberately so static_off
+; growth (this header) is small. Cold-start undo_kind = 0
+; (UNDO_KIND_EMPTY) via init_cold_start's LDIR zero-fill, so the
+; first u after boot reports msg_nothing_to_undo (FR46). See
+; src/undo.asm for per-kind layout semantics:
+;   undo_kind: UNDO_KIND_EMPTY / _INSERT / _DELETE / _REPLACE /
+;              _TOO_LARGE / _INDENT_WALK / _DEDENT_WALK.
+;   undo_position: 16-bit logical offset where the inverse op acts.
+;   undo_length: 16-bit byte count — meaning per kind (INSERT: bytes
+;                to remove on replay; DELETE: bytes to re-insert from
+;                payload; REPLACE: new-content bytes to remove; INDENT/
+;                DEDENT_WALK: span of [position, position+length) the
+;                inverse walk iterates).
+;   undo_aux_length: 16-bit; REPLACE-only — bytes to re-insert (old
+;                    content saved in undo_buffer).
+undo_kind             EQU static_data_base + static_off
+static_off            =   static_off + 1
+undo_position         EQU static_data_base + static_off
+static_off            =   static_off + 2
+undo_length           EQU static_data_base + static_off
+static_off            =   static_off + 2
+undo_aux_length       EQU static_data_base + static_off
+static_off            =   static_off + 2
+
 ;; --- Buffers ---
 ; Each size sourced from inc/equates.inc per NFR16 (no magic
 ; numbers here). search_pattern and ex_buffer reserve 1 length

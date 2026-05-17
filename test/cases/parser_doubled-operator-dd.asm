@@ -222,6 +222,7 @@
     INCLUDE "../../src/gapbuf.asm"
     INCLUDE "../../src/exline.asm"
     INCLUDE "../../src/fileio.asm"
+    INCLUDE "../../src/undo.asm"
 
 ;; ----- input_loop stub (resolves bdos_error_funnel symbol) -----
     INCLUDE "../inc/test_input_loop_stub.inc"

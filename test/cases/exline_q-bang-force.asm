@@ -82,6 +82,7 @@
     ;; fileio_load + fileio_strip_leading_spaces (cmd_edit / cmd_edit_force);
     ;; INCLUDE fileio.asm to resolve those forward references at build time.
     INCLUDE "../../src/fileio.asm"
+    INCLUDE "../../src/undo.asm"
 
 ;; ----- input_loop stub -----
     INCLUDE "../inc/test_input_loop_stub.inc"

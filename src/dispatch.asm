@@ -261,6 +261,18 @@ dispatch_key:
 ; Calls:   status_set_message; parser_clear (tail-JP)
 ; ----------------------------------------------------------------
 enter_normal_mode:
+    ;; Story 2.13 INSERT-session exit hook (B2 — insert sessions undo
+    ;; as a single unit; FR45). If mode_byte was MODE_INSERT, this is
+    ;; the Esc-from-INSERT exit point — invoke the exit recorder BEFORE
+    ;; the MODE_NORMAL write (the recorder reads cursor_offset and
+    ;; insert_session_entry_cursor to compute the session delta; it
+    ;; does NOT touch mode_byte). Esc-from-COMMAND and Esc-from-VISUAL
+    ;; arrive here too (via dispatch_command / dispatch_visual entries);
+    ;; the CP MODE_INSERT guard ensures the hook only fires on the
+    ;; INSERT exit path.
+    LD      A, (mode_byte)
+    CP      MODE_INSERT
+    CALL    Z, undo_insert_exit_record
     LD      A, MODE_NORMAL
     LD      (mode_byte), A
     LD      HL, msg_mode_normal
@@ -287,6 +299,18 @@ enter_normal_mode:
 ; Calls:   status_set_message; parser_clear (tail-JP)
 ; ----------------------------------------------------------------
 enter_insert_mode:
+    ;; Story 2.13 INSERT-session entry hook (B2; FR45). Save the entry
+    ;; cursor BEFORE the mode write so the exit hook in enter_normal_mode
+    ;; / edits_overflow_to_normal can compute the session delta. Covers
+    ;; all five user-visible INSERT entry paths: `i` (this binding) +
+    ;; `a` (edits_enter_insert_after's tail-JP) + `o` / `O`
+    ;; (edits_open_below / _above tail-JP via edits_open_success_tail) +
+    ;; `c`+motion (op_compose_c tail-JP). For the c+motion case, phase 1
+    ;; of the REPLACE protocol has already written UNDO_KIND_DELETE +
+    ;; saved the old content to undo_buffer; the exit hook reads that
+    ;; kind and upgrades to UNDO_KIND_REPLACE.
+    LD      HL, (cursor_offset)
+    LD      (insert_session_entry_cursor), HL
     LD      A, MODE_INSERT
     LD      (mode_byte), A
     LD      HL, msg_mode_insert
@@ -552,7 +576,10 @@ dispatch_normal:
     ASSERT  'p' > 'o'
     DEFB    'p'                         ; 'p'     — paste from yank register (FR32, Story 2.12)
     DEFW    op_paste
-    ASSERT  'v' > 'p'
+    ASSERT  'u' > 'p'
+    DEFB    'u'                         ; 'u'     — single-level undo (FR45, Story 2.13)
+    DEFW    op_undo
+    ASSERT  'v' > 'u'
     DEFB    'v'                         ; 'v'     — enter visual (FR15)
     DEFW    enter_visual_mode
     ASSERT  'w' > 'v'

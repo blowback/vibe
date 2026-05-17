@@ -83,6 +83,24 @@ KIND_CHAR             EQU 0x00    ; character-wise yank (Story 2.11 dw/d$/c5w/y3
 KIND_LINE             EQU 0x01    ; line-wise yank (Story 2.10 dd/yy — THIS STORY introduces)
 KIND_BLOCK            EQU 0x02    ; block-wise yank (Epic 3 visual-block; reserved)
 
+;; --- Undo register kinds (FR45 — Story 2.13) ---
+; 1-byte discriminator stored in undo_kind (state.inc). 5 valid kinds plus
+; TOO_LARGE. See src/undo.asm for the per-kind record + replay protocols.
+; Cold-start undo_kind = 0 (UNDO_KIND_EMPTY) per init.asm's LDIR zero-fill,
+; so the first u after boot reports msg_nothing_to_undo. Q6 Option B
+; (Story 2.13 dev pin) ships dedicated INDENT_WALK / DEDENT_WALK kinds —
+; full indent/dedent undo coverage (with a documented vi-divergence for
+; dedent of lines that had no leading INDENT_BYTE: replay re-indents them,
+; producing an extra space; recoverable by manual dedent).
+UNDO_KIND_EMPTY        EQU 0x00   ; cold-start / post-u consumed — nothing to replay
+UNDO_KIND_INSERT       EQU 0x01   ; inverse-op = delete (insert sessions, paste)
+UNDO_KIND_DELETE       EQU 0x02   ; inverse-op = insert (x, dd, dw, indent)
+UNDO_KIND_REPLACE      EQU 0x03   ; inverse-op = delete-then-insert (cw via two-phase upgrade)
+UNDO_KIND_TOO_LARGE    EQU 0x04   ; recorded but exceeds payload capacity — replay refuses
+UNDO_KIND_INDENT_WALK  EQU 0x05   ; inverse-op = dedent walk over [position, position+length)
+UNDO_KIND_DEDENT_WALK  EQU 0x06   ; inverse-op = indent walk over [position, position+length)
+UNDO_PAYLOAD_SIZE      EQU UNDO_BUFFER_SIZE   ; alias — self-documenting payload-size refs
+
 ;; --- Notes ---
 ; GAP_BUFFER_BASE is intentionally NOT defined here. It is positional,
 ; not a knob: Story 1.3 lands it in inc/state.inc as

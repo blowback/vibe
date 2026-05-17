@@ -309,6 +309,7 @@ test_mbb_set_usr_int:
     ;; forward references inside dispatch.asm / init.asm.
     INCLUDE "../../src/exline.asm"
     INCLUDE "../../src/fileio.asm"
+    INCLUDE "../../src/undo.asm"
 
 ;; ----- state.inc LAST (positional anchor: static_data_base = $) -----
     INCLUDE "../../inc/state.inc"
