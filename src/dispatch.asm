@@ -124,7 +124,15 @@
 ;                     Story 2.9 — edits_delete_char added as the
 ;                     new dispatch_normal 'x' entry (FR28; the
 ;                     first NORMAL-mode mutating operator); slot
-;                     count grows 32 → 33.)
+;                     count grows 32 → 33.
+;                     Story 2.12 — op_paste added as the new
+;                     dispatch_normal 'p' entry (FR32; paste from
+;                     yank register — KIND_CHAR / KIND_LINE /
+;                     KIND_BLOCK-reserved discrimination; second
+;                     non-trivial reader of the SR6 yank register);
+;                     slot count grows 33 → 34. Inserted between
+;                     'o' (open-below) and 'v' (enter-visual) at
+;                     the sorted-ascending key position.)
 ; ============================================================
 
 ;; ============================================================
@@ -541,7 +549,10 @@ dispatch_normal:
     ASSERT  'o' > 'l'
     DEFB    'o'                         ; 'o'     — open line below (FR26, Story 2.8)
     DEFW    edits_open_below
-    ASSERT  'v' > 'o'
+    ASSERT  'p' > 'o'
+    DEFB    'p'                         ; 'p'     — paste from yank register (FR32, Story 2.12)
+    DEFW    op_paste
+    ASSERT  'v' > 'p'
     DEFB    'v'                         ; 'v'     — enter visual (FR15)
     DEFW    enter_visual_mode
     ASSERT  'w' > 'v'

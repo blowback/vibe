@@ -92,9 +92,11 @@
 ;   op_compose_dedent         ; Story 2.11 — < + motion — line-promoted (FR39, FR40)
 ;   op_indent_line            ; Story 2.11 — >> / N>> — doubled-form line indent (FR40)
 ;   op_dedent_line            ; Story 2.11 — << / N<< — doubled-form line dedent (FR40)
+;   op_paste                  ; NORMAL-mode `p` / `Np` — paste yank-register content (Story 2.12; FR32)
 ;   ; Internal helpers (also documented per AR23 at each contract block):
 ;   ; edits_line_range_for_count, edits_copy_to_yank, edits_range_delete,
-;   ; edits_compose_range (Story 2.11), edits_indent_walk (Story 2.11)
+;   ; edits_compose_range (Story 2.11), edits_indent_walk (Story 2.11),
+;   ; edits_paste_yank_bytes (Story 2.12)
 ;
 ; State owned (read/write):
 ;   cursor_offset   ; the o / O / a handlers re-position the cursor;
@@ -138,6 +140,25 @@
 ;                     pending_motion_inclusive read by all five
 ;                     per-operator bodies; cleared centrally by
 ;                     parser_clear.
+;                     Story 2.12: op_paste is the SECOND non-trivial
+;                     READER of the SR6 yank register — reads
+;                     yank_kind / yank_length / yank_buffer (content)
+;                     to insert at cursor. NEVER writes the yank
+;                     register (paste is read-only on yank — multiple
+;                     pastes after one yank are intentional vi
+;                     semantic). Writes cursor_offset (advanced by
+;                     N×yank_length on success or by partial-paste
+;                     count on overflow; final placement per kind
+;                     rule — last byte for KIND_CHAR / start of
+;                     inserted line for KIND_LINE). Writes
+;                     buffer_dirty=1 on every success or partial path
+;                     where ≥1 byte landed (via edits_dirty_and_redraw);
+;                     the explicit-LF-prelude-failed path
+;                     (KIND_LINE last-line-no-LF + buffer full)
+;                     bypasses the .commit funnel so buffer_dirty
+;                     stays unchanged when 0 bytes landed. The
+;                     KIND_CHAR partial-paste path with 0 bytes
+;                     inserted also bypasses .commit.
 ;
 ; State read-only:
 ;   gap_start, gap_end             ; SR2 / SR3 read by motion_byte_at_logical
@@ -1810,6 +1831,323 @@ edits_indent_walk:
     RET     C                           ; past EOF — done
     INC     HL                          ; next line_start
     JR      .iw_step
+
+
+;; ============================================================
+;; --- Internal helper: edits_paste_yank_bytes (Story 2.12) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; edits_paste_yank_bytes
+; Insert yank_length bytes from yank_buffer at cursor_offset via
+; per-byte gapbuf_insert calls. Each successful gapbuf_insert
+; advances cursor_offset by 1, so the cursor implicitly follows
+; the inserted content.
+;
+; yank_buffer sits at the static physical address
+; GAP_BUFFER_BASE + GAP_BUFFER_MAX (state.inc:144) — it is NOT a
+; logical offset into the gap buffer, so reads use direct
+; LD A,(DE) (no motion_byte_at_logical / SR3 math needed on
+; the read side).
+;
+; On gapbuf_insert overflow (CF=1; buffer at GAP_BUFFER_MAX), the
+; loop aborts and returns CF=1 with HL = bytes-inserted-so-far so
+; the caller can post-place the cursor relative to what actually
+; landed. msg_file_too_large is already in status_buffer (set by
+; gapbuf_insert before its CF=1 return).
+;
+; In:      (none — reads yank_buffer + yank_length; inserts at cursor_offset)
+; Out:     CF=0 success: yank_length bytes inserted; cursor advanced
+;          by yank_length.
+;          CF=1 overflow: HL = bytes successfully inserted (0..N-1);
+;          status_buffer holds msg_file_too_large.
+; Trashes: A, BC, DE, HL, F.
+; Calls:   gapbuf_insert.
+; ----------------------------------------------------------------
+edits_paste_yank_bytes:
+    LD      BC, (yank_length)           ; BC = byte count
+    LD      DE, yank_buffer             ; DE = read pointer (physical addr)
+    LD      HL, 0                       ; HL = bytes-inserted counter
+.byte_loop:
+    LD      A, B
+    OR      C
+    RET     Z                           ; BC == 0 — done; CF=0 (success)
+    LD      A, (DE)                     ; A = next yank byte
+    PUSH    BC                          ; gapbuf_insert trashes BC
+    PUSH    DE                          ; gapbuf_insert trashes DE
+    PUSH    HL                          ; preserve counter across the call
+    CALL    gapbuf_insert               ; CF=1 on buffer-full
+    POP     HL
+    POP     DE
+    POP     BC
+    RET     C                           ; overflow — HL = bytes-inserted; CF=1
+    INC     HL                          ; one more byte inserted
+    INC     DE                          ; advance read pointer
+    DEC     BC                          ; decrement remaining
+    JR      .byte_loop
+
+
+;; ============================================================
+;; --- Public entry: op_paste (FR32; Story 2.12) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; op_paste
+; NORMAL-mode `p` / `Np` — insert the yank-register content at the
+; position determined by yank_kind. Three discriminated flavours:
+;   KIND_CHAR  — insert AFTER cursor (cursor on LAST inserted byte).
+;                vi-faithful: after `dw p` cursor lands on the
+;                last byte of the pasted word.
+;   KIND_LINE  — insert as a new line BELOW current (cursor at start
+;                of inserted line). vi-faithful: after `yy p` cursor
+;                lands at column 0 of the duplicated line.
+;   KIND_BLOCK — reserved for Epic 3 visual-block; silent no-op.
+;
+; Edge paths:
+;   empty yank (yank_length==0) — silent no-op (vi convention).
+;   partial-paste (gapbuf_insert CF=1 mid-loop) — insertion stops
+;     at the failure point; status shows msg_file_too_large
+;     (set by gapbuf_insert); what got inserted is preserved
+;     (FR52: no silent data loss); cursor placed per kind rule.
+;   counted (`Np`) — N iterations of the inner insert; cursor
+;     placement is computed relative to the FULL inserted range.
+;
+; SECOND non-trivial READER of the SR6 yank register (after
+; edits_copy_to_yank's write-time capacity check). First reader
+; of the CONTENT at yank_buffer.
+;
+; State-discipline pin (critical — per Story 2.10 deferred-work.md:
+; 93-95 + Story 2.11 AC1): op_paste reads count_accumulator (via
+; motion_apply_count) AND yank_kind / yank_length / yank_buffer
+; BEFORE any tail-JP parser_clear. A future "consistency cleanup"
+; that hoisted parser_clear into a common prelude would silently
+; break `Np` and the count-vs-kind interaction.
+;
+; FR45 undo recording: STUB for Story 2.12. The hook site for
+; Story 2.13 is in edits_paste_yank_bytes, AFTER the loop completes
+; with actual bytes-inserted = HL (which captures both success
+; yank_length and partial-paste counts cleanly).
+;
+; KIND_CHAR cursor placement details (AC4):
+;   1. Pre-paste: advance cursor by 1 unless past-EOF or on LF
+;      (vi: insert AFTER cursor = insert AT cursor+1, but never
+;      past EOL or EOF — keeps the paste inside the current line).
+;   2. Outer count loop: N inner copies of yank_length bytes.
+;   3. Post-loop: DEC cursor → lands on LAST byte of full inserted
+;      range. Partial-paste: same DEC if any bytes landed; bypass
+;      .commit (and the DEC) if 0 bytes landed.
+;
+; KIND_LINE cursor placement details (AC5):
+;   1. Save entry_cursor.
+;   2. motion_find_line_end → walk to LF (or file_length for last-
+;      line-no-LF case).
+;   3. If LF found: cursor := LF + 1 (start of next line; paste
+;      content lands there as a new line).
+;   4. If past-EOF (last-line-no-LF case): explicit gapbuf_insert
+;      of 0x0A first (terminates current last line). Decision
+;      pinned for the dev pass per Q4: always-insert-LF Option A
+;      (simpler; corner-case "dd-last-line-no-LF → p" yields an
+;      extra blank line but is recoverable via Story 2.13 undo;
+;      saves ~15-25 B vs the peek-yank_buffer[0]==0x0A path).
+;   5. Outer count loop: N copies of yank content. The cursor
+;      naturally advances through the inserted bytes.
+;   6. Post-loop: cursor := motion_find_line_end(entry_cursor) + 1
+;      (start of the FIRST inserted line — the line BELOW the
+;      original line containing entry_cursor).
+;   7. Partial-paste: motion_find_line_start(cursor) lands cursor
+;      at the start of the (partial) inserted line.
+;   8. Overflow during the explicit-LF prelude: 0 bytes inserted;
+;      bypass .commit; JP parser_clear directly.
+;
+; In:      A = 'p' (MC4; ignored — dispatch chain consumed the byte).
+;          count_accumulator MAY be 0 (defaulted to 1 by
+;          motion_apply_count) or non-zero (`Np`).
+;          yank_kind / yank_length / yank_buffer hold the most
+;          recent yank state (or zero-init values pre-first-yank).
+; Out:     success — N×yank_length bytes inserted per kind rule;
+;          cursor placed per kind rule; buffer_dirty=1; all rows
+;          dirty; parser cleared.
+;          empty / KIND_BLOCK — silent no-op; state UNCHANGED;
+;          parser cleared.
+;          partial — bytes-so-far inserted; cursor placed per kind
+;          rule; buffer_dirty=1 (or unchanged on the explicit
+;          0-bytes-landed branches); parser cleared.
+; Trashes: A, BC, DE, HL, F.
+; Calls:   motion_apply_count (count read);
+;          motion_byte_at_logical (KIND_CHAR pre-paste probe;
+;             KIND_LINE past-EOF probe — both BC-preserving);
+;          motion_find_line_end (KIND_LINE prelude + success
+;             cursor placement);
+;          motion_find_line_start (KIND_LINE partial cursor placement);
+;          gapbuf_insert (KIND_LINE explicit-LF prelude);
+;          edits_paste_yank_bytes (inner loop — trashes BC);
+;          edits_dirty_and_redraw (success / partial commit);
+;          parser_clear (tail-JP every path).
+; ----------------------------------------------------------------
+op_paste:
+    ;; Step 1: empty-yank guard. Silent no-op (vi convention; Q2 pin).
+    LD      HL, (yank_length)
+    LD      A, H
+    OR      L
+    JP      Z, parser_clear
+
+    ;; Step 2: KIND_BLOCK guard. Reserved for Epic 3 visual-block;
+    ;; silent no-op (Q3 pin).
+    LD      A, (yank_kind)
+    CP      KIND_BLOCK
+    JP      Z, parser_clear
+
+    ;; Step 3: apply count → BC.
+    CALL    motion_apply_count          ; BC = N (1 minimum)
+
+    ;; Step 4: branch on yank_kind. KIND_LINE branch; else KIND_CHAR
+    ;; (also catches any unrecognised value defensively).
+    LD      A, (yank_kind)
+    CP      KIND_LINE
+    JR      Z, .paste_line
+
+;; --- KIND_CHAR branch ---
+.paste_char:
+    ;; Save raw entry cursor (BEFORE the optional pre-paste advance)
+    ;; so the 0-bytes-landed Z-branch can restore it; otherwise the
+    ;; user would see cursor jump by 1 on a paste that inserted nothing.
+    LD      HL, (cursor_offset)
+    PUSH    HL                          ; [raw_entry_cursor]
+    ;; Pre-paste cursor advance (vi: insert AFTER cursor = insert AT
+    ;; cursor+1). Skip advance if past-EOF or on LF — keeps paste
+    ;; within the current line / first inserted-into position.
+    ;; motion_byte_at_logical preserves BC (motions.asm contract).
+    CALL    motion_byte_at_logical      ; A = byte; CF=1 past EOF; HL preserved
+    JR      C, .pc_no_advance
+    CP      0x0A
+    JR      Z, .pc_no_advance
+    INC     HL
+    LD      (cursor_offset), HL
+.pc_no_advance:
+    ;; Save pre-paste cursor (after the optional advance) for partial-
+    ;; paste cursor placement / zero-bytes-landed detection.
+    LD      HL, (cursor_offset)
+    PUSH    HL                          ; [raw_entry][pre_cursor]
+.pc_count_loop:
+    PUSH    BC                          ; [raw_entry][pre_cursor][count]
+    CALL    edits_paste_yank_bytes      ; CF=1 on overflow
+    POP     BC
+    JR      C, .pc_partial
+    DEC     BC
+    LD      A, B
+    OR      C
+    JR      NZ, .pc_count_loop
+    ;; Success: DEC cursor to land on LAST byte of full inserted range.
+    POP     HL                          ; discard pre_cursor
+    POP     HL                          ; discard raw_entry
+    LD      HL, (cursor_offset)
+    DEC     HL
+    LD      (cursor_offset), HL
+    JP      .commit
+
+.pc_partial:
+    ;; Partial paste. If cursor_offset advanced past pre_cursor, DEC
+    ;; (last inserted byte per Q5 pin). Else 0 bytes landed — restore
+    ;; raw_entry cursor (undoes the pre-paste advance) and bypass
+    ;; .commit so we don't spuriously dirty/repaint.
+    POP     DE                          ; DE = pre_cursor
+    LD      HL, (cursor_offset)
+    OR      A
+    SBC     HL, DE                      ; HL = cursor - pre_cursor; CF=0
+    LD      A, H
+    OR      L
+    JR      NZ, .pc_partial_dec         ; >0 bytes landed — DEC cursor
+    ;; 0 bytes landed: restore raw entry cursor, bypass .commit.
+    POP     HL                          ; HL = raw_entry_cursor
+    LD      (cursor_offset), HL
+    JP      parser_clear
+.pc_partial_dec:
+    POP     HL                          ; discard raw_entry
+    LD      HL, (cursor_offset)
+    DEC     HL
+    LD      (cursor_offset), HL
+    JP      .commit
+
+;; --- KIND_LINE branch ---
+.paste_line:
+    ;; Save entry cursor on stack (for post-paste cursor placement).
+    LD      HL, (cursor_offset)
+    PUSH    HL                          ; [entry_cursor]
+    ;; LF-prelude: walk to end-of-line, then either advance past LF
+    ;; (LF found) or insert explicit LF (past-EOF / last-line-no-LF).
+    ;; BC count is trashed by the prelude; re-read after via
+    ;; motion_apply_count (count_accumulator preserved until
+    ;; parser_clear at end).
+    CALL    motion_find_line_end        ; HL = LF or file_length; BC preserved
+    LD      (cursor_offset), HL
+    CALL    motion_byte_at_logical      ; A = byte at HL; CF=1 past EOF
+    JR      C, .pl_past_eof
+    ;; HL on LF — advance by 1 for insert-after-LF position.
+    INC     HL
+    LD      (cursor_offset), HL
+    JR      .pl_count_setup
+.pl_past_eof:
+    ;; Last-line-no-LF: insert explicit LF first (terminate current
+    ;; last line). Q4 pin: always-insert (Option A); even when the
+    ;; yank content starts with 0x0A (the dd-of-last-line-with-prior
+    ;; case), we do not peek-and-skip — simpler body; corner case
+    ;; recoverable via Story 2.13 undo.
+    LD      A, 0x0A
+    CALL    gapbuf_insert               ; cursor advances to fl+1 on success
+    JR      C, .pl_overflow_no_content
+.pl_count_setup:
+    CALL    motion_apply_count          ; BC = N (re-read; count still preserved)
+.pl_count_loop:
+    PUSH    BC                          ; preserve count across helper
+    CALL    edits_paste_yank_bytes      ; CF=1 on overflow
+    POP     BC
+    JR      C, .pl_partial
+    DEC     BC
+    LD      A, B
+    OR      C
+    JR      NZ, .pl_count_loop
+    ;; Success: place cursor at start of FIRST inserted line.
+    ;; entry_cursor's line still has the same content; its line-end
+    ;; (the LF that originally followed it OR the explicitly-inserted
+    ;; LF) sits at the same logical position relative to the prefix.
+    ;; motion_find_line_end(entry_cursor) returns that LF; +1 lands
+    ;; cursor at the start of the inserted line.
+    POP     HL                          ; HL = entry_cursor
+    LD      (cursor_offset), HL
+    CALL    motion_find_line_end        ; HL = LF position; BC preserved
+    INC     HL
+    LD      (cursor_offset), HL
+    JP      .commit
+
+.pl_partial:
+    ;; Partial paste of KIND_LINE: cursor sits mid-content of what got
+    ;; pasted. Walk back to the previous line-start (the start of the
+    ;; partial inserted line). Some bytes landed (≥ the prelude LF if
+    ;; that ran; or ≥ 1 byte from the count loop if prelude was the
+    ;; LF-found branch and the very first byte made it). The "0 bytes
+    ;; landed" sub-case for KIND_LINE (LF-found prelude + first byte
+    ;; fails) falls into this path and re-dirties spuriously — accepted
+    ;; per AC8 "mildly wasteful but correct".
+    POP     HL                          ; discard entry_cursor
+    LD      HL, (cursor_offset)
+    CALL    motion_find_line_start      ; BC preserved
+    LD      (cursor_offset), HL
+    JP      .commit
+
+.pl_overflow_no_content:
+    ;; Explicit-LF prelude failed (last-line-no-LF + buffer full).
+    ;; 0 bytes inserted. Restore cursor to entry_cursor — line 2070's
+    ;; pre-paste write moved cursor to file_length; without this
+    ;; restore the user would see cursor jump to EOF on a paste that
+    ;; inserted nothing. Bypass .commit so we don't dirty the buffer
+    ;; for a paste that didn't happen.
+    POP     HL                          ; HL = entry_cursor
+    LD      (cursor_offset), HL         ; restore (was = file_length)
+    JP      parser_clear
+
+.commit:
+    CALL    edits_dirty_and_redraw      ; buffer_dirty=1 + render_mark_all_dirty
+    JP      parser_clear
 
 
 ;; ============================================================

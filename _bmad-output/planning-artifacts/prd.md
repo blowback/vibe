@@ -845,17 +845,22 @@ others are explicitly listed as not applicable.
 
 ### Resource Consumption
 
-- **NFR9: Code size budget.** Ceiling: 5120 bytes (5 KB) of Z80 code
-  (amended 2026-05-15 from the original 3072 B / ~3 KB target after
-  Stories 2.2-2.5 fileio + motions footprint showed the 3 KB target
-  was set pre-fileio and pre-motions implementation). The amended
+- **NFR9: Code size budget.** Ceiling: 5760 bytes (~5.625 KB) of Z80 code
+  (amended 2026-05-16 from the prior 5120 B ceiling — itself amended
+  2026-05-15 from the original 3072 B / ~3 KB target). Story 2.11
+  closed at 5400 B (105.5% of 5120) and Story 2.12 (paste `p`) projected
+  +110-200 B atop that. Rather than dropping load-bearing scope (the
+  `yy p` / `dd p` muscle-memory paste flavours close FR32 end-to-end),
+  the ceiling was raised once more to absorb the compose layer + paste
+  + Story 2.13 single-level undo with ~150-250 B headroom. The amended
   ceiling preserves the original spirit (small editor fits MicroBeast's
-  tight TPA pressure) while accommodating realistic per-feature
-  footprint. Stories 2.6-2.13 monitor against this ceiling; further
-  amends require an explicit retro review. Safety paths (NFR5-NFR8,
-  FR51 oversize-refusal, FR52 buffer-dirty preservation, BH2 clamps)
-  are exempt from byte-shaving pressure — accept overruns rather
-  than skip safety.
+  tight TPA pressure — NFR10 holds: static_end + GAP_BUFFER_MAX +
+  YANK_BUFFER_SIZE remain well under 0xD800) while accommodating
+  realistic per-feature footprint. Stories 2.13+ monitor against this
+  ceiling; further amends require an explicit retro review. Safety paths
+  (NFR5-NFR8, FR51 oversize-refusal, FR52 buffer-dirty preservation,
+  BH2 clamps) are exempt from byte-shaving pressure — accept overruns
+  rather than skip safety.
 - **NFR10: TPA fit.** Total static footprint (code + data + screen
   shadow + undo buffer + gap buffer) fits within the TPA
   (`0x0100..0xD7FF`, ~54 KB).
