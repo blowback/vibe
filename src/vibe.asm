@@ -42,7 +42,8 @@
 ;   src/gapbuf.asm (Story 1.7); src/render.asm (Story 1.11);
 ;   src/dispatch.asm (Story 1.9); src/parser.asm (Story 1.10);
 ;   src/motions.asm (Story 2.5); src/edits.asm (Story 2.8);
-;   src/exline.asm (Story 2.1); src/fileio.asm (Story 2.2)
+;   src/search.asm (Story 3.1); src/exline.asm (Story 2.1);
+;   src/fileio.asm (Story 2.2); src/undo.asm (Story 2.13)
 ; ============================================================
 
 ;; --- Compile-time-constant includes (dependency order per AR25) ---
@@ -134,27 +135,38 @@
     INCLUDE "motions.asm"
 
 ;; --- Buffer edits (FR13, FR16, FR24-FR27; edits.asm — Story 2.8) ---
-; AR25 order: motions -> edits -> exline. Story 2.8 lands the i /
-; a / o / O entry handlers + the INSERT-mode literal / Backspace /
-; Enter handlers — VIBE's first true edit-and-save round-trip
-; surface. dispatch_normal's a / o / O entries forward-reference
-; edits_enter_insert_after / edits_open_below / edits_open_above;
-; dispatch_insert's Backspace / Enter entries forward-reference
-; edits_insert_backspace / edits_insert_newline; unbound_insert's
-; body forward-references edits_insert_literal. Visual / search
-; modules will INCLUDE between edits.asm and exline.asm when they
-; arrive (Story 3.x).
+; AR25 order: motions -> edits -> search -> exline. Story 2.8 lands
+; the i / a / o / O entry handlers + the INSERT-mode literal /
+; Backspace / Enter handlers — VIBE's first true edit-and-save
+; round-trip surface. dispatch_normal's a / o / O entries forward-
+; reference edits_enter_insert_after / edits_open_below /
+; edits_open_above; dispatch_insert's Backspace / Enter entries
+; forward-reference edits_insert_backspace / edits_insert_newline;
+; unbound_insert's body forward-references edits_insert_literal.
+; Story 3.1 lands search.asm in the slot between edits and exline
+; per the long-planned position (visual modules will slot here too
+; when they arrive later in Epic 3).
     INCLUDE "edits.asm"
 
+;; --- Forward literal search (FR41; search.asm — Story 3.1) ---
+; AR25 order: edits -> search -> exline -> fileio -> undo.
+; search.asm slots between edits.asm and exline.asm in the long-
+; planned AR25 position. dispatch_normal's '/' entry forward-
+; references search_begin; exline_dispatch's top-of-routine
+; submode branch forward-references search_commit; both resolve
+; via sjasmplus's two-pass model. search_forward_from is the
+; Story-3.2 (`n` repeat-last-search) hand-off helper — its signature
+; is the contract Story 3.2 inherits.
+    INCLUDE "search.asm"
+
 ;; --- Ex command-line (FR14, FR3, FR8; exline.asm — Story 2.1) ---
-; AR25 order: edits -> (visual / search yet to land) -> exline ->
-; fileio -> undo. With the visual / search modules not yet present,
-; exline slots in immediately after edits; future stories (3.x
-; search/visual) will INCLUDE between edits.asm and exline.asm
-; as they arrive. dispatch_command's table forward-references
-; exline_begin / exline_append_literal / exline_backspace /
-; exline_dispatch / exline_cancel; sjasmplus's two-pass
-; assembly resolves them here.
+; AR25 order: search -> exline -> fileio -> undo. dispatch_command's
+; table forward-references exline_begin / exline_append_literal /
+; exline_backspace / exline_dispatch / exline_cancel; sjasmplus's
+; two-pass assembly resolves them here. Story 3.1 grew exline.asm's
+; remit: exline_compose_status / exline_dispatch / exline_cancel_core
+; branch on command_submode to share the prompt edit path with
+; src/search.asm's `/` surface (Q2 pin — shared ex_buffer).
     INCLUDE "exline.asm"
 
 ;; --- File I/O (FR6, FR9, FR10, FR11, FR51; fileio.asm — Story 2.2) ---

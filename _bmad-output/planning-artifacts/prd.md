@@ -845,24 +845,19 @@ others are explicitly listed as not applicable.
 
 ### Resource Consumption
 
-- **NFR9: Code size budget.** Ceiling: 6400 bytes (~6.25 KB) of Z80 code
-  (amended 2026-05-17 from the prior 5760 B ceiling — itself amended
-  2026-05-16 from 5120 B, 2026-05-15 from 5120 B-from-3072, and 2026-05
-  from the original 3072 B / ~3 KB target). Story 2.12 closed at 5615 B
-  (97.5% of 5760). Story 2.13 single-level undo (the closing Epic 2
-  story; FR45 / FR46 end-to-end) added +626 B for op_undo + 5 replay
-  bodies (INSERT / DELETE / REPLACE / INDENT_WALK / DEDENT_WALK) + the
-  6 record helpers + the shared undo_write_header + the INSERT-session
-  entry/exit hooks + 9 mutating-handler hook sites + 7 B of new state
-  cells. Final 6241 B / 97.5% of 6400 / 159 B headroom for code review
-  + future hardening. Q6 Option B (Ant's pick — diverges from spec-
-  recommended Option C deferral) gave full indent/dedent undo coverage
-  at the cost of ~120 B (instead of ~12 B for Option C's undo_clear-at-
-  entry-only path) — the closing-cost decision that pushed the ceiling
-  raise. The amended ceiling preserves the original spirit (small editor
-  fits MicroBeast's tight TPA pressure — NFR10 holds: static_end +
+- **NFR9: Code size budget.** Ceiling: 8192 bytes (~8 KB) of Z80 code
+  (amended 2026-05-17 at the Epic-3 entry boundary from the prior 6400 B
+  ceiling — itself amended 2026-05-17 from 5760 B, 2026-05-16 from
+  5120 B, 2026-05-15 from 5120 B-from-3072, and 2026-05 from the original
+  3072 B / ~3 KB target). The Epic-2 retro recommended this amend (action
+  A2) on entering Epic 3 to give the remaining ~8 stories budget without
+  per-story ceiling churn. Story 2.13 closed at 6241 B (97.5% of the
+  prior 6400 ceiling; 159 B headroom). Projected Epic 3 close lands
+  7000-7500 B / 85-91% of the new 8192 ceiling / 600-1200 B residual
+  headroom. The amended ceiling preserves the original spirit (small
+  editor fits MicroBeast's tight TPA pressure — NFR10 holds: static_end +
   GAP_BUFFER_MAX + YANK_BUFFER_SIZE remain well under 0xD800) while
-  accommodating realistic per-feature footprint. Epic 3 entry resets
+  accommodating realistic per-feature footprint. Epic 4 entry resets
   the budget conversation; further amends require an explicit retro
   review. Safety paths (NFR5-NFR8, FR51 oversize-refusal, FR52 buffer-
   dirty preservation, BH2 clamps) are exempt from byte-shaving pressure

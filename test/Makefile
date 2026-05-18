@@ -36,6 +36,16 @@ TIMEOUT_SECS      := 5
 CASES := $(wildcard cases/*.asm)
 COMS  := $(CASES:.asm=.com)
 
+# Epic-2 retro action A1: rebuild every test case whenever any
+# production source or include header changes. The Story-2.1 /
+# 2.2 incident pattern was that bulk-INCLUDE edits to test cases
+# left some cases assembled against stale src/, masking 14 real
+# breakages. Conservative coarse-grained dep: $(wildcard ...) is
+# evaluated once at Make-parse time so a build run sees a
+# consistent dependency snapshot. Story 3.1 lands this fix.
+PROD_SRC := $(wildcard ../src/*.asm)
+PROD_INC := $(wildcard ../inc/*.inc)
+
 # Story 2.2 fixtures — generated at test-build time so the binaries
 # don't have to be committed. big.bin is matched by the repo-root
 # *.bin .gitignore rule; eof1a.txt is regenerated each `make test`
@@ -46,7 +56,7 @@ FIXTURES := fixtures/eof1a.txt fixtures/big.bin
 
 all: test
 
-cases/%.com: cases/%.asm inc/test_prologue.inc inc/test_epilogue.inc
+cases/%.com: cases/%.asm inc/test_prologue.inc inc/test_epilogue.inc $(PROD_SRC) $(PROD_INC)
 	$(SJASMPLUS) $(SJASMPLUS_FLAGS) --raw=$@ $<
 
 # Story 2.2: small file with text + 0x1A EOF marker + trailing

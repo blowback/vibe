@@ -14,6 +14,7 @@
 ;   Input timing:    ESC_TIMEOUT_TICKS
 ;   Editing knobs:   INDENT_BYTE
 ;   Yank kinds:      KIND_CHAR, KIND_LINE, KIND_BLOCK (Story 2.10)
+;   COMMAND submode: CMD_SUB_EX, CMD_SUB_SEARCH (Story 3.1)
 ;
 ; State owned (read/write):
 ;   (none — equates are constants only)
@@ -38,6 +39,12 @@ EX_COMMAND_BUFFER     EQU 64      ; Ex (:) command-line buffer (bytes)
                                     ; exline_append_literal (silent wrap).
     ASSERT EX_COMMAND_BUFFER < 256
 SEARCH_PATTERN_BUFFER EQU 64      ; Last-search pattern buffer (bytes)
+                                    ; Length byte is 8-bit; same wrap
+                                    ; risk as EX_COMMAND_BUFFER if this
+                                    ; were ever bumped past 255 (the
+                                    ; search_commit / search_forward_from
+                                    ; length reads use A).
+    ASSERT SEARCH_PATTERN_BUFFER < 256
 YANK_BUFFER_SIZE      EQU 1024    ; Yank/put register (bytes) — 16-bit only
 FILENAME_BUFFER_SIZE  EQU 16      ; CP/M filename text form: drive:8.3 + NUL + slack
 ; GAP_BUFFER_MAX = 0x8000: high bit set in 16-bit form. Bounds compares
@@ -100,6 +107,19 @@ UNDO_KIND_TOO_LARGE    EQU 0x04   ; recorded but exceeds payload capacity — re
 UNDO_KIND_INDENT_WALK  EQU 0x05   ; inverse-op = dedent walk over [position, position+length)
 UNDO_KIND_DEDENT_WALK  EQU 0x06   ; inverse-op = indent walk over [position, position+length)
 UNDO_PAYLOAD_SIZE      EQU UNDO_BUFFER_SIZE   ; alias — self-documenting payload-size refs
+
+;; --- COMMAND-mode submode discriminator (Story 3.1) ---
+; 1-byte discriminator stored in command_submode (state.inc). Sibling
+; cluster to KIND_* and UNDO_KIND_*. CMD_SUB_EX = 0 is the natural
+; cold-start default (init_cold_start's LDIR zero-fill leaves 0 here),
+; so the first `:` after boot reads CMD_SUB_EX and routes through the
+; established exline path. CMD_SUB_SEARCH = 1 is set by search_begin
+; on `/` entry and cleared by exline_cancel_core on every COMMAND →
+; NORMAL return. exline_compose_status branches on this to pick the
+; `/` vs `:` prefix glyph; exline_dispatch branches on it to route
+; Enter to search_commit instead of the ex-command table walk.
+CMD_SUB_EX             EQU 0x00   ; the `:` (ex command) prompt
+CMD_SUB_SEARCH         EQU 0x01   ; the `/` (search) prompt
 
 ;; --- Notes ---
 ; GAP_BUFFER_BASE is intentionally NOT defined here. It is positional,

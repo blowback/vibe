@@ -189,6 +189,7 @@
     INCLUDE "../../src/parser.asm"
     INCLUDE "../../src/motions.asm"
     INCLUDE "../../src/edits.asm"
+    INCLUDE "../../src/search.asm"
     INCLUDE "../../src/exline.asm"
     INCLUDE "../../src/fileio.asm"
     INCLUDE "../../src/undo.asm"

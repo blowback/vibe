@@ -41,6 +41,18 @@
 ;                   WRITE_SEQ / CLOSE cluster); this module makes
 ;                   no BDOS calls directly.
 ;
+;          Story 3.1 generalises this module to also host the
+;          `/`-search prompt edit path: the same ex_buffer is the
+;          edit surface (Q2 pin); a new 1-byte command_submode in
+;          state.inc discriminates ':' (CMD_SUB_EX) vs '/'
+;          (CMD_SUB_SEARCH). exline_compose_status branches on it
+;          to pick the prefix glyph; exline_dispatch branches on
+;          it to route Enter to search_commit (src/search.asm)
+;          instead of the ex-command table walk; exline_cancel_core
+;          clears it back to CMD_SUB_EX on every COMMAND → NORMAL
+;          return. No change to ex_buffer's writers/readers — the
+;          buffer is genuinely shared.
+;
 ; Public:
 ;   exline_begin               ; ':' entry from dispatch_normal
 ;   exline_append_literal      ; dispatch_command unbound-prefix
@@ -393,18 +405,38 @@ exline_backspace:
 ; handlers that don't (cmd_quit / cmd_quit_force) ignore them and
 ; see A = 0 (no space in the input).
 ;
-; In:      A = 0x0D (MC4 — ignored; state comes from ex_buffer).
-; Out:     match: control transferred to handler (no return here).
-;          no-match: msg_not_editor_command in status_buffer;
-;                    ex_buffer cleared; mode = NORMAL;
+; Story 3.1: a top-of-routine command_submode branch routes Enter
+; to search_commit (src/search.asm) on CMD_SUB_SEARCH. The branch
+; runs BEFORE the bare-Enter short-circuit so that `/<Enter>` with
+; empty ex_buffer reaches search_commit (which handles the AC4
+; reuse case) instead of exline_cancel (which would discard the
+; user's intent to repeat the prior pattern).
+;
+; In:      A = 0x0D (MC4 — ignored; state comes from ex_buffer +
+;          command_submode).
+; Out:     SEARCH submode: control transferred to search_commit.
+;          EX submode + match: control transferred to handler (no
+;          return here).
+;          EX submode + no-match: msg_not_editor_command in
+;                    status_buffer; ex_buffer cleared; mode = NORMAL;
 ;                    status_dirty set. Returns to dispatch_key's
 ;                    caller via exline_cancel_core's RET.
+;          EX submode + bare-Enter: silent JP exline_cancel.
 ; Trashes: A, BC, DE, HL, F (handlers may trash more).
-; Calls:   matched handler (cmd_quit / cmd_quit_force / cmd_edit /
-;          cmd_edit_force), status_set_message, exline_cancel_core,
-;          exline_cancel.
+; Calls:   search_commit (Story 3.1; tail-JP on SEARCH submode),
+;          matched ex handler (cmd_quit / cmd_quit_force / cmd_edit /
+;          cmd_edit_force / cmd_write / cmd_write_quit),
+;          status_set_message, exline_cancel_core, exline_cancel.
 ; ----------------------------------------------------------------
 exline_dispatch:
+    ;; Story 3.1: route to search_commit on SEARCH submode. MUST
+    ;; come BEFORE the bare-Enter short-circuit so /<Enter> on an
+    ;; empty ex_buffer reaches search_commit's AC4 reuse arm
+    ;; instead of being silently cancelled.
+    LD      A, (command_submode)
+    CP      CMD_SUB_SEARCH
+    JP      Z, search_commit
+
     ;; Bare-Enter (length 0) exits silently per vi convention — skip
     ;; the table walk that would otherwise surface 'not an editor
     ;; command' on every empty ':' (length 0 mismatches every entry).
@@ -574,6 +606,7 @@ exline_cancel:
 exline_cancel_core:
     XOR     A
     LD      (ex_buffer), A              ; length = 0
+    LD      (command_submode), A        ; Story 3.1: back to CMD_SUB_EX = 0
     LD      A, MODE_NORMAL
     LD      (mode_byte), A
     LD      A, 1
@@ -880,19 +913,32 @@ cmd_save_strlen_filename_buffer:
 
 ; ----------------------------------------------------------------
 ; exline_compose_status
-; Build ":<ex_buffer payload>\0" in exline_status_scratch and
-; hand it to status_set_message. Tail-JP so the funnel's RET
+; Build "<prefix><ex_buffer payload>\0" in exline_status_scratch
+; and hand it to status_set_message. Tail-JP so the funnel's RET
 ; returns to whoever called us.
 ;
-; In:      (none — reads ex_buffer + ex_buffer_text)
-; Out:     status_buffer populated (':' + payload + space-pad);
+; Story 3.1: the prefix glyph is selected from command_submode —
+; CMD_SUB_EX (0) → ':' (the historical default; cold-start fall-
+; through), CMD_SUB_SEARCH (1) → '/'. Same scratch buffer; same
+; status_set_message tail-JP; the only ex-line code that changes
+; per submode is the single LD (HL), <glyph>.
+;
+; In:      (none — reads ex_buffer + ex_buffer_text + command_submode)
+; Out:     status_buffer populated (prefix + payload + space-pad);
 ;          status_dirty set (by status_set_message).
 ; Trashes: A, BC, DE, HL, F.
 ; Calls:   status_set_message (tail-JP).
 ; ----------------------------------------------------------------
 exline_compose_status:
     LD      HL, exline_status_scratch
+    LD      A, (command_submode)
+    OR      A
+    JR      Z, .prefix_ex               ; CMD_SUB_EX -> ':'
+    LD      (HL), '/'                   ; CMD_SUB_SEARCH -> '/' (Story 3.1)
+    JR      .prefix_done
+.prefix_ex:
     LD      (HL), ':'
+.prefix_done:
     INC     HL
     LD      A, (ex_buffer)              ; length
     OR      A
@@ -920,7 +966,10 @@ exline_compose_status:
 ; handler address (little-endian DEFW). Table terminated by a
 ; single zero byte (a zero-length key). Story 2.4 extended the
 ; table from 4 to 6 entries by inserting :w and :wq between :e!
-; and :q; Story 3.1's `/`-search entry will land before :q too.
+; and :q. Story 3.1's `/`-search is NOT a `:`-prefixed entry —
+; it's a dispatch_normal['/'] key handled by search_begin /
+; search_commit in src/search.asm. The table walk here only runs
+; when command_submode == CMD_SUB_EX, so no `/` row is needed.
 
 exline_command_table:
     DEFB    "e", 0                      ; entry 0: ':e'  (length 1)

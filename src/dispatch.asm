@@ -40,7 +40,6 @@
 ;   enter_insert_mode
 ;   enter_visual_mode
 ;   mode_full_refresh_stub        ; Ctrl-L  — Story 1.11 lands real
-;   mode_search_prompt_stub       ; /       — Story 3.1 lands real
 ;   DISPATCH_NORMAL_COUNT         ; per-table entry-count equates
 ;   DISPATCH_INSERT_COUNT
 ;   DISPATCH_COMMAND_COUNT
@@ -133,6 +132,13 @@
 ;                     slot count grows 33 → 34. Inserted between
 ;                     'o' (open-below) and 'v' (enter-visual) at
 ;                     the sorted-ascending key position.)
+;   src/search.asm   (Story 3.1 — search_begin replaces the retired
+;                     mode_search_prompt_stub at dispatch_normal's
+;                     '/' entry; FR41. The stub body is gone — the
+;                     entry now points directly at search_begin in
+;                     src/search.asm. Forward-referenced via
+;                     sjasmplus two-pass since search.asm INCLUDEs
+;                     after dispatch.asm in vibe.asm's AR25 chain.)
 ; ============================================================
 
 ;; ============================================================
@@ -366,23 +372,6 @@ enter_visual_mode:
 mode_full_refresh_stub:
     JP      render_full
 
-; ----------------------------------------------------------------
-; mode_search_prompt_stub
-; Bound to '/' in dispatch_normal. Story 3.1 replaces with the
-; real forward-search prompt path.
-;
-; In:      A = '/' (MC4)
-; Out:     status line = "not yet implemented"
-; Trashes: A, BC, DE, HL, F
-; Calls:   status_set_message
-; ----------------------------------------------------------------
-mode_search_prompt_stub:
-    LD      HL, msg_not_implemented
-    XOR     A
-    CALL    status_set_message
-    RET
-
-
 ;; ============================================================
 ;; --- Per-mode unbound-key handlers (FR50) ---
 ;; ============================================================
@@ -493,8 +482,8 @@ dispatch_normal:
     DEFB    '$'                         ; '$'     — motion to line-end (FR21, Story 2.6)
     DEFW    motion_dollar
     ASSERT  '/' > '$'
-    DEFB    '/'                         ; '/'     — search prompt stub (3.1)
-    DEFW    mode_search_prompt_stub
+    DEFB    '/'                         ; '/'     — search prompt (FR41, Story 3.1)
+    DEFW    search_begin
     ASSERT  '0' > '/'
     DEFB    '0'                         ; '0'     — leading-zero handled
     DEFW    parser_handle_digit         ;            inside the parser (FR21)

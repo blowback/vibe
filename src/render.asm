@@ -407,7 +407,11 @@ render_diff:
 
     ;; --- Story 2.1 / AC11: mode-aware cursor target ---
     ;; In MODE_COMMAND the cursor sits on the status row at
-    ;; col (1 + ex_buffer length), with the ':' glyph at col 0.
+    ;; col (1 + ex_buffer length), with the prefix glyph at col 0
+    ;; (':' in CMD_SUB_EX, '/' in CMD_SUB_SEARCH per Story 3.1 —
+    ;; the math is unchanged because both submodes share ex_buffer
+    ;; as the edit surface; only the prefix glyph differs, and
+    ;; that's owned by exline_compose_status).
     ;; Override render_cursor_row / col before the trailing
     ;; RI4 emit so the ESC Y goes to the right place. The
     ;; override is a no-op in every other mode (the values set

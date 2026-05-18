@@ -10,14 +10,15 @@
 ;   Small state:    mode_byte, visual_submode, buffer_dirty,
 ;                   pending_operator, yank_kind, status_dirty,
 ;                   pending_motion_prefix, pending_motion_inclusive,
-;                   input_held_byte, input_held_flag
+;                   command_submode, input_held_byte, input_held_flag
 ;   16-bit state:   cursor_offset, gap_start, gap_end,
 ;                   visual_anchor, count_accumulator,
 ;                   yank_length, top_line_offset,
 ;                   input_tick_counter
-;   Buffers:        status_buffer, search_pattern, ex_buffer,
-;                   ex_buffer_text, filename_buffer, shadow_buffer,
-;                   dirty_rows, undo_buffer
+;   Buffers:        status_buffer, search_pattern,
+;                   search_pattern_text, ex_buffer, ex_buffer_text,
+;                   filename_buffer, shadow_buffer, dirty_rows,
+;                   undo_buffer
 ;   Reserved pool:  yank_buffer, yank_end
 ;
 ; State owned (read/write):
@@ -68,6 +69,17 @@ static_off            =   static_off + 1
 ; will set the flag the same way. KIND_BLOCK / line-class operators do
 ; NOT touch it.
 pending_motion_inclusive EQU static_data_base + static_off
+static_off            =   static_off + 1
+; command_submode — 1-byte discriminator for MODE_COMMAND.
+; CMD_SUB_EX = 0 (the `:` prompt) is the cold-start default since
+; init_cold_start's LDIR zero-fill lands 0 here; CMD_SUB_SEARCH = 1
+; means the `/` search prompt is active. Writer: search_begin sets
+; CMD_SUB_SEARCH; exline_cancel_core clears back to CMD_SUB_EX on
+; every COMMAND→NORMAL return. Reader: exline_compose_status (picks
+; `/` vs `:` prefix), exline_dispatch (routes Enter to search_commit
+; on SEARCH submode), statusln.asm's bdos_error_funnel (defensive
+; clear alongside its ex-line cleanup). Story 3.1.
+command_submode       EQU static_data_base + static_off
 static_off            =   static_off + 1
 input_held_byte       EQU static_data_base + static_off
 static_off            =   static_off + 1
@@ -136,13 +148,17 @@ status_buffer         EQU static_data_base + static_off
 static_off            =   static_off + STATUS_LINE_WIDTH
 search_pattern        EQU static_data_base + static_off
 static_off            =   static_off + 1 + SEARCH_PATTERN_BUFFER
+; Sibling of ex_buffer_text below — positional EQU naming the raw
+; payload bytes past the length prefix. Resolves the Story-1.3
+; deferral on the search_pattern_text symbol (deferred-work.md:16).
+; Reader: search_forward_from's inner byte-compare loop; writer:
+; search_commit's LDIR from ex_buffer_text on Enter. Story 3.1.
+search_pattern_text   EQU search_pattern + 1
 ex_buffer             EQU static_data_base + static_off
 static_off            =   static_off + 1 + EX_COMMAND_BUFFER
 ; Resolves Story-1.3 deferral on ex_buffer length-byte naming
 ; convention (deferred-work.md). Positional EQU only — no
-; static_off advance, no bytes emitted. The sibling
-; search_pattern_text lands in Story 3.1 when search consumers
-; arrive (deliberately deferred to avoid an unused symbol now).
+; static_off advance, no bytes emitted.
 ex_buffer_text        EQU ex_buffer + 1
 filename_buffer       EQU static_data_base + static_off
 static_off            =   static_off + FILENAME_BUFFER_SIZE
