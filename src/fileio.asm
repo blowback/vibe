@@ -175,10 +175,11 @@
 ;                               ; parse_filename to rebuild fcb_scratch
 ;                               ; for the save (state-decoupled from
 ;                               ; the prior load's :e history).
-;   fileio_status_scratch       ; 48-byte holding area for the
-;                               ; dynamic status strings.
-;   fileio_dec_dest             ; 2-byte scratch for u16_to_dec
-;                               ; output-pointer marshalling.
+;   ; Story 3.3: status_compose_scratch RETIRED in favour of the
+;   ; shared status_compose_scratch (state.inc) so every status-
+;   ; line composer uses one cell (Q3 Option A). fileio_dec_dest
+;   ; RETIRED alongside fileio_u16_to_dec — the helper relocated
+;   ; to src/statusln.asm as status_u16_to_dec (Q2 Option A).
 ;   fileio_write_count          ; Story 2.4 — 2-byte total payload
 ;                               ; cached at fileio_save Step 5,
 ;                               ; consumed at Step 11 to seed
@@ -347,7 +348,7 @@ fileio_load:
     ;; reads `bdos_error_pre_msg` and uses it in place of
     ;; msg_bdos_error.
     CALL    fileio_compose_cant_open
-    LD      HL, fileio_status_scratch
+    LD      HL, status_compose_scratch
     LD      (bdos_error_pre_msg), HL
 
     ;; Step 4: BDOS_OPEN. On 0xFF the macro JPs the funnel which
@@ -593,7 +594,7 @@ fileio_save:
     ;; buffer — defeating the FR52 protection this pre-check exists
     ;; to enforce. buffer_dirty / filename_buffer / gap state all
     ;; preserved; user can STAT $R/W and retry.
-    CALL    fileio_compose_cant_write       ; HL = fileio_status_scratch
+    CALL    fileio_compose_cant_write       ; HL = status_compose_scratch
     LD      (bdos_error_pre_msg), HL
     JP      bdos_error_funnel               ; terminal JP input_loop
 .precheck_done:
@@ -601,7 +602,7 @@ fileio_save:
     ;; Step 1: pre-stage "can't write <filename>" banner so the
     ;; BDOS_CALL macro's funnel surfaces it on any non-DELETE
     ;; sign-bit failure (MAKE / WRITE_SEQ / CLOSE).
-    CALL    fileio_compose_cant_write       ; HL = fileio_status_scratch
+    CALL    fileio_compose_cant_write       ; HL = status_compose_scratch
     LD      (bdos_error_pre_msg), HL
 
     ;; Step 2: AR15 SAVE CARVE-OUT — inline BDOS_DELETE.
@@ -712,7 +713,7 @@ fileio_save:
 
     ;; Step 11: compose + emit "<FILENAME> N bytes written".
     LD      BC, (fileio_write_count)
-    CALL    fileio_compose_written_status   ; HL = fileio_status_scratch
+    CALL    fileio_compose_written_status   ; HL = status_compose_scratch
     XOR     A                               ; non-error code (AR16)
     JP      status_set_message              ; tail-JP
 
@@ -803,7 +804,7 @@ fileio_save_flush_sector:
     ;; Re-stage pre_msg defensively (it should still be set from
     ;; fileio_save's Step 1; the re-stage is paranoid) and route
     ;; to the funnel.
-    LD      HL, fileio_status_scratch
+    LD      HL, status_compose_scratch
     LD      (bdos_error_pre_msg), HL
     JP      bdos_error_funnel
 
@@ -937,7 +938,7 @@ fileio_load_initial:
     XOR     A
     LD      (buffer_dirty), A
     CALL    render_mark_all_dirty
-    LD      HL, fileio_status_scratch
+    LD      HL, status_compose_scratch
     XOR     A                           ; non-error-code arg (AR16)
     JP      status_set_message          ; tail-JP
 
@@ -1015,7 +1016,7 @@ fileio_setup_from_default_fcb:
 
 ; ----------------------------------------------------------------
 ; fileio_compose_new_file_status
-; Build "<filename> [new file]\0" in fileio_status_scratch from
+; Build "<filename> [new file]\0" in status_compose_scratch from
 ; the NUL-terminated filename_buffer + the static suffix
 ; fileio_msg_new_file_suffix (" [new file]\0"). Used by the
 ; launch path on BDOS_OPEN failure (AC4) to surface the vi-canonical
@@ -1023,16 +1024,16 @@ fileio_setup_from_default_fcb:
 ;
 ; Capacity: filename_buffer (max 15 chars excl NUL) + suffix
 ; (11 chars) + NUL = 27 bytes. Well within the existing 48-byte
-; fileio_status_scratch ceiling.
+; status_compose_scratch ceiling.
 ;
 ; In:      (none — reads filename_buffer + fileio_msg_new_file_suffix)
-; Out:     fileio_status_scratch contains the composed banner;
-;          HL = fileio_status_scratch (ready for status_set_message).
+; Out:     status_compose_scratch contains the composed banner;
+;          HL = status_compose_scratch (ready for status_set_message).
 ; Trashes: A, DE, HL, F.
 ; ----------------------------------------------------------------
 fileio_compose_new_file_status:
     LD      HL, filename_buffer
-    LD      DE, fileio_status_scratch
+    LD      DE, status_compose_scratch
 .copy_filename:
     LD      A, (HL)
     OR      A
@@ -1053,7 +1054,7 @@ fileio_compose_new_file_status:
     INC     DE
     JR      .copy_suffix
 .done:
-    LD      HL, fileio_status_scratch
+    LD      HL, status_compose_scratch
     RET
 
 
@@ -1339,18 +1340,18 @@ fileio_ingest_sector:
 
 ; ----------------------------------------------------------------
 ; fileio_compose_cant_open
-; Build "can't open <filename>\0" in fileio_status_scratch.
+; Build "can't open <filename>\0" in status_compose_scratch.
 ; Called BEFORE BDOS_OPEN, so on failure the BDOS funnel can
 ; surface the context-rich banner via the bdos_error_pre_msg
 ; override.
 ;
 ; In:      (none — reads fileio_msg_cant_open_prefix + filename_buffer)
-; Out:     fileio_status_scratch contains the composed banner.
+; Out:     status_compose_scratch contains the composed banner.
 ; Trashes: A, BC, DE, HL, F.
 ; ----------------------------------------------------------------
 fileio_compose_cant_open:
     LD      HL, fileio_msg_cant_open_prefix
-    LD      DE, fileio_status_scratch
+    LD      DE, status_compose_scratch
 .copy_prefix:
     LD      A, (HL)
     OR      A
@@ -1377,7 +1378,7 @@ fileio_compose_cant_open:
 
 ; ----------------------------------------------------------------
 ; fileio_compose_cant_write
-; Build "can't write <filename>\0" in fileio_status_scratch.
+; Build "can't write <filename>\0" in status_compose_scratch.
 ; Called BEFORE the BDOS write sequence (MAKE / WRITE_SEQ / CLOSE),
 ; so on failure the funnel can surface the context-rich banner
 ; via the bdos_error_pre_msg override.
@@ -1385,17 +1386,17 @@ fileio_compose_cant_open:
 ; Structure mirrors fileio_compose_cant_open exactly — only the
 ; prefix DEFB differs. AR16: "can't write " is 12 chars + NUL.
 ; Max composed length 12 + 15 + 1 = 28 bytes; within the existing
-; 48-byte fileio_status_scratch budget.
+; 48-byte status_compose_scratch budget.
 ;
 ; In:      (none — reads fileio_msg_cant_write_prefix + filename_buffer)
-; Out:     fileio_status_scratch contains the composed banner;
-;          HL = fileio_status_scratch (ready to load into
+; Out:     status_compose_scratch contains the composed banner;
+;          HL = status_compose_scratch (ready to load into
 ;          bdos_error_pre_msg).
 ; Trashes: A, BC, DE, HL, F.
 ; ----------------------------------------------------------------
 fileio_compose_cant_write:
     LD      HL, fileio_msg_cant_write_prefix
-    LD      DE, fileio_status_scratch
+    LD      DE, status_compose_scratch
 .copy_prefix:
     LD      A, (HL)
     OR      A
@@ -1415,7 +1416,7 @@ fileio_compose_cant_write:
     INC     DE
     JR      .cf_loop
 .done:
-    LD      HL, fileio_status_scratch       ; HL = pre-stage pointer for caller
+    LD      HL, status_compose_scratch       ; HL = pre-stage pointer for caller
     RET
 
 
@@ -1425,7 +1426,7 @@ fileio_compose_cant_write:
 
 ; ----------------------------------------------------------------
 ; fileio_compose_loaded_status
-; Build "<filename> <count> bytes\0" in fileio_status_scratch.
+; Build "<filename> <count> bytes\0" in status_compose_scratch.
 ;
 ; Story 2.4 refactor: this entry now loads its private suffix DEFB
 ; into DE and JPs into the shared body fileio_compose_filename_count_suffix
@@ -1435,7 +1436,7 @@ fileio_compose_cant_write:
 ; Story 2.2's fileio_load tests are the regression net.
 ;
 ; In:      BC = byte count (16-bit, 0..GAP_BUFFER_MAX)
-; Out:     HL = fileio_status_scratch (ready for status_set_message)
+; Out:     HL = status_compose_scratch (ready for status_set_message)
 ; Trashes: A, BC, DE, HL, F.
 ; ----------------------------------------------------------------
 fileio_compose_loaded_status:
@@ -1445,13 +1446,13 @@ fileio_compose_loaded_status:
 
 ; ----------------------------------------------------------------
 ; fileio_compose_written_status (Story 2.4)
-; Build "<filename> <count> bytes written\0" in fileio_status_scratch.
+; Build "<filename> <count> bytes written\0" in status_compose_scratch.
 ;
 ; Routes through the shared body fileio_compose_filename_count_suffix
 ; (below) with the " bytes written" suffix.
 ;
 ; In:      BC = byte count (16-bit, 0..GAP_BUFFER_MAX)
-; Out:     HL = fileio_status_scratch (ready for status_set_message)
+; Out:     HL = status_compose_scratch (ready for status_set_message)
 ; Trashes: A, BC, DE, HL, F.
 ; ----------------------------------------------------------------
 fileio_compose_written_status:
@@ -1463,23 +1464,23 @@ fileio_compose_written_status:
 ; fileio_compose_filename_count_suffix
 ; Shared body for fileio_compose_loaded_status and the Story-2.4
 ; fileio_compose_written_status. Composes
-; "<filename> <count><suffix>" in fileio_status_scratch, where
+; "<filename> <count><suffix>" in status_compose_scratch, where
 ; <suffix> is a caller-supplied NUL-terminated string passed in
 ; DE (typically " bytes\0" or " bytes written\0").
 ;
 ; Capacity: filename (max 15) + space (1) + 5 decimal digits + 14
 ; (" bytes written") + NUL (1) = 36 bytes max. Within the 48-byte
-; fileio_status_scratch budget.
+; status_compose_scratch budget.
 ;
 ; In:      BC = byte count, DE = NUL-terminated suffix ptr
-; Out:     HL = fileio_status_scratch (ready for status_set_message)
+; Out:     HL = status_compose_scratch (ready for status_set_message)
 ; Trashes: A, BC, DE, HL, F.
 ; ----------------------------------------------------------------
 fileio_compose_filename_count_suffix:
     PUSH    BC                              ; save byte count
     PUSH    DE                              ; save suffix ptr
     LD      HL, filename_buffer
-    LD      DE, fileio_status_scratch
+    LD      DE, status_compose_scratch
 .copy_filename:
     LD      A, (HL)
     OR      A
@@ -1494,7 +1495,7 @@ fileio_compose_filename_count_suffix:
     INC     DE
     POP     HL                              ; HL = suffix ptr (saved)
     EX      (SP), HL                        ; stack top = suffix ptr; HL = byte count
-    CALL    fileio_u16_to_dec               ; advances DE past digits
+    CALL    status_u16_to_dec               ; advances DE past digits (Story 3.3: relocated to statusln.asm)
     POP     HL                              ; HL = suffix ptr
 .copy_suffix:
     LD      A, (HL)
@@ -1505,74 +1506,7 @@ fileio_compose_filename_count_suffix:
     INC     DE
     JR      .copy_suffix
 .done:
-    LD      HL, fileio_status_scratch
-    RET
-
-
-;; ============================================================
-;; --- Internal helper: fileio_u16_to_dec ---
-;; ============================================================
-
-; ----------------------------------------------------------------
-; fileio_u16_to_dec
-; Emit HL as 1..5 decimal digits at (DE); leading zeros suppressed
-; except for the units digit (so 0 -> "0", not "").
-;
-; In:      HL = unsigned 16-bit value, DE = dest ptr
-; Out:     DE = first byte past last emitted digit
-; Trashes: A, BC, HL, F. Also reads/writes module-local
-;          `fileio_dec_dest` (dest-ptr marshalling between digits).
-;
-; Strategy: trial-subtract each power of 10 (10000, 1000, 100, 10)
-; with PUSH/POP HL so an underflowing subtract is reverted; emit
-; the resulting digit, suppressing leading zeros via a flag in B.
-; The final 1s digit is HL itself (HL is < 10 by then).
-; ----------------------------------------------------------------
-fileio_u16_to_dec:
-    LD      (fileio_dec_dest), DE
-    LD      B, 0                            ; emit-flag (0 = suppress leading zero)
-
-    LD      DE, 10000
-    CALL    .ts_emit
-    LD      DE, 1000
-    CALL    .ts_emit
-    LD      DE, 100
-    CALL    .ts_emit
-    LD      DE, 10
-    CALL    .ts_emit
-
-    ;; Final 1s digit — always emit.
-    LD      A, L
-    ADD     A, '0'
-    LD      DE, (fileio_dec_dest)
-    LD      (DE), A
-    INC     DE
-    RET
-
-.ts_emit:
-    LD      C, 0                            ; digit accumulator
-.ts_sub:
-    PUSH    HL
-    OR      A                               ; clear CF
-    SBC     HL, DE
-    JR      C, .ts_underflow
-    POP     AF                              ; discard saved HL (1 byte vs 2× INC SP)
-    INC     C
-    JR      .ts_sub
-.ts_underflow:
-    POP     HL                              ; restore HL (pre-SBC value)
-    LD      A, B
-    OR      C                               ; A = emit-flag | digit
-    RET     Z                               ; both 0 -> still suppressing
-    LD      A, C                            ; A = digit (0..9)
-    LD      B, 1                            ; flip emit-flag on
-    ADD     A, '0'
-    PUSH    HL
-    LD      HL, (fileio_dec_dest)
-    LD      (HL), A
-    INC     HL
-    LD      (fileio_dec_dest), HL
-    POP     HL
+    LD      HL, status_compose_scratch
     RET
 
 
@@ -1624,24 +1558,18 @@ fileio_abort_common:
 fcb_scratch:
     DEFS    36, 0
 
-; 48-byte holding area for dynamic status banners. Capacity check
-; (Story 2.4 refresh — the written-status banner is now the largest):
-;   "<filename> N bytes written" = 15 + 1 + 5 + 14 + NUL = 36 bytes
-;   "can't write <filename>"     = 12 + 15 + NUL          = 28 bytes
-;   "<filename> N bytes"         = 15 + 1 + 5 + 6 + NUL   = 28 bytes
-;   "can't open <filename>"      = 11 + 15 + NUL          = 27 bytes
-;   "<filename> [new file]"      = 15 + 11 + NUL          = 27 bytes
-; 48 stays generous (max needed = 36); the ASSERT pins the lower
-; bound so a future banner stretch surfaces at build time.
-fileio_status_scratch:
-    DEFS    48, 0
-    ASSERT  $ - fileio_status_scratch >= 48
+; Story 3.3 (Q3 Option A): the legacy 48-byte fileio_status_scratch
+; (previously labelled here) RETIRED. All status-line composers now
+; share `status_compose_scratch` in inc/state.inc — capacity 48 B
+; (unchanged headroom; see state.inc comment for sizing reasoning).
+; The compose helpers in this module still LD HL/DE,
+; status_compose_scratch; only the storage moved.
 
 fileio_msg_cant_open_prefix:
     DEFB    "can't open ", 0                ; 11 chars + NUL (AR16)
 
 ; Story 2.4: "can't write " prefix used by fileio_compose_cant_write
-; to compose "can't write <filename>" into fileio_status_scratch.
+; to compose "can't write <filename>" into status_compose_scratch.
 ; Pre-staged in bdos_error_pre_msg before BDOS_MAKE / BDOS_WRITE_SEQ
 ; / BDOS_CLOSE so the funnel can surface the context-rich banner.
 fileio_msg_cant_write_prefix:
@@ -1650,7 +1578,7 @@ fileio_msg_cant_write_prefix:
 ; Story 2.3: " [new file]" suffix appended to filename_buffer when
 ; vibe FILENAME launches with a not-yet-on-disk name. Composed
 ; dynamically by fileio_compose_new_file_status into
-; fileio_status_scratch and emitted via status_set_message.
+; status_compose_scratch and emitted via status_set_message.
 fileio_msg_new_file_suffix:
     DEFB    " [new file]", 0                ; 11 chars + NUL (AR16)
 
@@ -1664,11 +1592,10 @@ fileio_msg_bytes_suffix:
 fileio_msg_bytes_written_suffix:
     DEFB    " bytes written", 0             ; 14 chars + NUL (AR16)
 
-; 16-bit scratch for fileio_u16_to_dec output-pointer marshalling.
-; The trial-subtract loop uses DE for the divisor, so the dest
-; pointer rides in this cell across the per-digit emit.
-fileio_dec_dest:
-    DEFW    0
+; Story 3.3 (Q2 Option A): fileio_dec_dest RETIRED — it relocated
+; alongside fileio_u16_to_dec to src/statusln.asm as status_dec_dest
+; (module-local in statusln.asm; AR12 home for status-line numeric
+; composition state).
 
 ; Story 2.4: total payload byte count computed at fileio_save's
 ; Step 5 and consumed at Step 11 to seed fileio_compose_written_status.

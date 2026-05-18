@@ -153,6 +153,7 @@
     INCLUDE "../../src/parser.asm"
     INCLUDE "../../src/motions.asm"     ; Story 2.5: dispatch_normal forward-references motion_h/j/k/l
     INCLUDE "../../src/edits.asm"
+    INCLUDE "../../src/visual.asm"
     INCLUDE "../../src/search.asm"     ; Story 2.8: dispatch_normal forward-references edits_*, dispatch_insert table grows, unbound_insert tail-JPs edits_insert_literal
     INCLUDE "../../src/exline.asm"
     INCLUDE "../../src/fileio.asm"

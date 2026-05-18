@@ -15,6 +15,9 @@
 ;                   visual_anchor, count_accumulator,
 ;                   yank_length, top_line_offset,
 ;                   input_tick_counter
+;   Scratch cells:  status_compose_scratch (48 B, Story 3.3 — shared
+;                   status-line composer scratch across visual.asm
+;                   and fileio.asm; Q3 pin Option A)
 ;   Buffers:        status_buffer, search_pattern,
 ;                   search_pattern_text, ex_buffer, ex_buffer_text,
 ;                   filename_buffer, shadow_buffer, dirty_rows,
@@ -101,6 +104,23 @@ yank_length           EQU static_data_base + static_off
 static_off            =   static_off + 2
 top_line_offset       EQU static_data_base + static_off
 static_off            =   static_off + 2
+; status_compose_scratch — Story 3.3 (Q3 Option A): SHARED scratch
+; buffer for status-line composers across modules. Writers:
+;   * src/visual.asm — visual_compose_status (Story 3.3) builds
+;     "-- visual -- <count>\0" here (max 19 B; "-- visual -- 65535\0")
+;   * src/fileio.asm — fileio_compose_* (Stories 2.2/2.3/2.4) build
+;     filename + count + suffix banners (max ~35 B: 14-char filename
+;     + " bytes written" + 5 digits + NUL).
+; Readers: status_set_message's copy_loop (transitively, via the
+; HL pointer the composers hand it).
+; Size = 48 B — matches the legacy fileio_status_scratch capacity
+; with ASSERT slack; visual.asm uses only the first 19 B. Future
+; composers (line/column indicator, modified-flag, undo display)
+; will reuse this cell — no per-module scratch declarations.
+; Cold-start LDIR zero-fill from init_cold_start zeros it; no
+; explicit initialisation required.
+status_compose_scratch EQU static_data_base + static_off
+static_off            =   static_off + 48
 ; input_tick_counter — 16-bit counter incremented by the user ISR
 ; installed in src/init.asm at cold-start (resolves the Story 1.4 W1
 ; tick-counter deferral via MBB_SET_USR_INT; see inc/bios.inc).

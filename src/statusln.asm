@@ -9,6 +9,17 @@
 ;
 ; Public:
 ;   status_set_message   ; MC5 funnel: HL = msg ptr, A = optional code
+;   status_u16_to_dec    ; Story 3.3 (Q2 Option A): emit HL as 1..5
+;                        ; decimal digits at (DE); leading zeros
+;                        ; suppressed except for the units digit
+;                        ; (so 0 -> "0", not ""). Relocated from
+;                        ; src/fileio.asm where it was a module-
+;                        ; local helper for filename+count banners;
+;                        ; lives here now as the AR12 home for all
+;                        ; status-line numeric composition. Callers
+;                        ; today: fileio_compose_filename_count_suffix
+;                        ; (Story 2.4); visual_compose_status
+;                        ; (Story 3.3 — visual extent count).
 ;   bdos_error_funnel    ; abort path entered from BDOS_CALL on JP M.
 ;                        ; Story 2.2 widened the funnel: if
 ;                        ; `bdos_error_pre_msg` is non-zero, the
@@ -32,18 +43,26 @@
 ;     msg_not_implemented, msg_no_write, msg_bdos_error,
 ;     msg_missing_filename (Story 2.2 — :e with no arg),
 ;     msg_read_error (Story 2.2 — mid-read BDOS rc >= 2),
-;     msg_mode_normal, msg_mode_insert, msg_mode_visual,
+;     msg_mode_normal, msg_mode_insert,
 ;     msg_unbound_key (Story 1.9 — mode/unbound; Story 2.1
 ;     retired msg_mode_command — the ':' prompt in ex_buffer
 ;     is the COMMAND-mode indicator now),
 ;     msg_not_editor_command (Story 2.1 — ex-line no-match),
 ;     msg_yank_too_large (Story 2.10 — SR6 over-capacity refusal),
 ;     msg_no_previous_pattern (Story 3.1 — `/<Enter>` with empty
-;     search_pattern at cold-start)
+;     search_pattern at cold-start),
+;     msg_mode_visual_prefix (Story 3.3 — "-- visual -- " with
+;     trailing space; the bare msg_mode_visual at this slot was
+;     retired when src/dispatch.asm's enter_visual_mode stub left)
 ;
 ; State owned (read/write):
 ;   status_buffer        ; 80-byte row buffer; writer = this module only (AR12)
 ;   status_dirty         ; nonzero = needs render; writer = this module only (AR12)
+;   status_dec_dest      ; Story 3.3 — module-local 16-bit scratch
+;                        ; for status_u16_to_dec's output-pointer
+;                        ; marshalling across the per-digit emit.
+;                        ; Renamed from fileio_dec_dest when the
+;                        ; helper relocated here (Q2 Option A).
 ;   bdos_error_pre_msg   ; Story 2.2 — module-local 16-bit cell;
 ;                        ; non-zero = pointer to caller-supplied
 ;                        ; NUL-terminated string the funnel uses in
@@ -124,6 +143,74 @@ status_set_message:
 .set_dirty:
     LD      A, 1
     LD      (status_dirty), A
+    RET
+
+; ----------------------------------------------------------------
+; status_u16_to_dec
+; Emit HL as 1..5 decimal digits at (DE); leading zeros suppressed
+; except for the units digit (so 0 -> "0", not "").
+;
+; Relocated from src/fileio.asm (Story 3.3 Q2 pin Option A) — the
+; helper lives here now as the AR12 home for all status-line numeric
+; composition. Behaviour and calling contract unchanged from the
+; Story-2.4 implementation; the module-local marshalling cell was
+; renamed from fileio_dec_dest -> status_dec_dest at the same time.
+;
+; In:      HL = unsigned 16-bit value, DE = dest ptr
+; Out:     DE = first byte past last emitted digit
+; Trashes: A, BC, HL, F. Also reads/writes module-local
+;          `status_dec_dest` (dest-ptr marshalling between digits).
+;
+; Strategy: trial-subtract each power of 10 (10000, 1000, 100, 10)
+; with PUSH/POP HL so an underflowing subtract is reverted; emit
+; the resulting digit, suppressing leading zeros via a flag in B.
+; The final 1s digit is HL itself (HL is < 10 by then).
+; ----------------------------------------------------------------
+status_u16_to_dec:
+    LD      (status_dec_dest), DE
+    LD      B, 0                            ; emit-flag (0 = suppress leading zero)
+
+    LD      DE, 10000
+    CALL    .ts_emit
+    LD      DE, 1000
+    CALL    .ts_emit
+    LD      DE, 100
+    CALL    .ts_emit
+    LD      DE, 10
+    CALL    .ts_emit
+
+    ;; Final 1s digit — always emit.
+    LD      A, L
+    ADD     A, '0'
+    LD      DE, (status_dec_dest)
+    LD      (DE), A
+    INC     DE
+    RET
+
+.ts_emit:
+    LD      C, 0                            ; digit accumulator
+.ts_sub:
+    PUSH    HL
+    OR      A                               ; clear CF
+    SBC     HL, DE
+    JR      C, .ts_underflow
+    POP     AF                              ; discard saved HL (1 byte vs 2× INC SP)
+    INC     C
+    JR      .ts_sub
+.ts_underflow:
+    POP     HL                              ; restore HL (pre-SBC value)
+    LD      A, B
+    OR      C                               ; A = emit-flag | digit
+    RET     Z                               ; both 0 -> still suppressing
+    LD      A, C                            ; A = digit (0..9)
+    LD      B, 1                            ; flip emit-flag on
+    ADD     A, '0'
+    PUSH    HL
+    LD      HL, (status_dec_dest)
+    LD      (HL), A
+    INC     HL
+    LD      (status_dec_dest), HL
+    POP     HL
     RET
 
 ; ----------------------------------------------------------------
@@ -244,7 +331,12 @@ msg_no_previous_pattern: DEFB "no previous pattern", 0
 ; indicator.
 msg_mode_normal:        DEFB 0
 msg_mode_insert:        DEFB "-- insert --", 0
-msg_mode_visual:        DEFB "-- visual --", 0
+; Story 3.3: the bare msg_mode_visual ("-- visual --", 0) was the
+; only string the retired src/dispatch.asm enter_visual_mode stub
+; emitted. visual_enter_char + visual_extend now compose
+; "-- visual -- <count>" dynamically via visual_compose_status
+; using this prefix (13 ASCII chars + trailing space + NUL).
+msg_mode_visual_prefix: DEFB "-- visual -- ", 0
 msg_unbound_key:        DEFB "unbound key", 0
 
 ;; --- Story 2.2: bdos_error_funnel override pointer ---
@@ -255,3 +347,10 @@ msg_unbound_key:        DEFB "unbound key", 0
 ; on its way to input_loop so a stale value cannot leak across
 ; unrelated BDOS errors.
 bdos_error_pre_msg:     DEFW 0
+
+;; --- Story 3.3: status_u16_to_dec dest-pointer marshalling ---
+; 16-bit scratch used by status_u16_to_dec's trial-subtract loop to
+; carry the dest pointer across each digit's PUSH/POP HL. Relocated
+; (and renamed) from fileio.asm's fileio_dec_dest when the helper
+; moved here under Q2 Option A. Module-local — not in state.inc.
+status_dec_dest:        DEFW 0

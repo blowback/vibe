@@ -36,9 +36,10 @@
 ;   unbound_normal                ; per-mode unbound-key handlers
 ;   unbound_insert
 ;   unbound_visual
-;   enter_normal_mode             ; mode-change handlers (FR12-16)
-;   enter_insert_mode
-;   enter_visual_mode
+;   enter_normal_mode             ; mode-change handlers (FR12, FR16)
+;   enter_insert_mode             ; (Story 3.3 retired enter_visual_mode —
+;                                 ; src/visual.asm's visual_enter_char
+;                                 ; replaces it at dispatch_normal['v'])
 ;   mode_full_refresh_stub        ; Ctrl-L  — Story 1.11 lands real
 ;   DISPATCH_NORMAL_COUNT         ; per-table entry-count equates
 ;   DISPATCH_INSERT_COUNT
@@ -146,6 +147,23 @@
 ;                     refactored to RET-based so it can be shared
 ;                     between search_commit (COMMAND mode caller)
 ;                     and search_next (NORMAL mode caller).)
+;   src/visual.asm   (Story 3.3 — visual_enter_char replaces the
+;                     retired enter_visual_mode stub at
+;                     dispatch_normal['v']; FR15. Stub body gone —
+;                     same shape as Story 3.1's mode_search_prompt_stub
+;                     retirement. dispatch_visual table extended from
+;                     1 → 20 entries: Esc (existing) + $ + 0..9 + G
+;                     + b + g + h/j/k/l + w. All 19 new handler
+;                     addresses forward-reference existing motion /
+;                     parser symbols in src/motions.asm and
+;                     src/parser.asm — no new handler bodies land
+;                     in this module. Forward-referenced via
+;                     sjasmplus two-pass since visual.asm INCLUDEs
+;                     after dispatch.asm in vibe.asm's AR25 chain.
+;                     visual_extend (the per-motion status refresh)
+;                     is called from src/edits.asm's
+;                     edits_compose_or_clear MODE_VISUAL arm — that
+;                     forward reference is independent of dispatch.asm.)
 ; ============================================================
 
 ;; ============================================================
@@ -332,29 +350,17 @@ enter_insert_mode:
     JP      parser_clear
 
 ; ----------------------------------------------------------------
-; enter_visual_mode
-; Entry from 'v' in normal mode (FR15). Sets visual_submode to
-; VIS_CHAR per AC7 ("update mode_byte and visual_submode if
-; entering visual"); concrete visual handlers land in Story 3.3.
-;
-; Tail-JPs parser_clear (Story 2.5 AC13) — same rationale as
-; enter_insert_mode.
-;
-; In:      A = 'v' (MC4)
-; Out:     mode_byte = MODE_VISUAL; visual_submode = VIS_CHAR;
-;          status indicator shown; parser state zeroed.
-; Trashes: A, BC, DE, HL, F
-; Calls:   status_set_message; parser_clear (tail-JP)
+; Story 3.3: enter_visual_mode (the Epic-1 stub formerly at this
+; slot, lines 334-357 in the pre-3.3 file) RETIRED. The real
+; visual-mode entry lives in src/visual.asm as `visual_enter_char`
+; — which writes mode_byte / visual_submode / visual_anchor and
+; composes the "-- visual -- 1" entry status via visual_compose_status
+; (per AC3). dispatch_normal['v'] now forward-references
+; visual_enter_char directly (no forwarder thunk; matches Story 3.1's
+; mode_search_prompt_stub retirement pattern). Esc-from-VISUAL still
+; arrives at enter_normal_mode above — unchanged from the Epic-1
+; design (the AR23 docstring at line 282-283 always named VISUAL exit).
 ; ----------------------------------------------------------------
-enter_visual_mode:
-    LD      A, MODE_VISUAL
-    LD      (mode_byte), A
-    LD      A, VIS_CHAR
-    LD      (visual_submode), A
-    LD      HL, msg_mode_visual
-    XOR     A
-    CALL    status_set_message
-    JP      parser_clear
 
 
 ;; ============================================================
@@ -579,8 +585,8 @@ dispatch_normal:
     DEFB    'u'                         ; 'u'     — single-level undo (FR45, Story 2.13)
     DEFW    op_undo
     ASSERT  'v' > 'u'
-    DEFB    'v'                         ; 'v'     — enter visual (FR15)
-    DEFW    enter_visual_mode
+    DEFB    'v'                         ; 'v'     — enter visual char mode (FR15, Story 3.3)
+    DEFW    visual_enter_char           ; forward ref into src/visual.asm; Story 3.3 retired enter_visual_mode
     ASSERT  'w' > 'v'
     DEFB    'w'                         ; 'w'     — motion forward-word (FR20, Story 2.6)
     DEFW    motion_w
@@ -619,8 +625,79 @@ dispatch_command:
 DISPATCH_COMMAND_COUNT EQU ($ - .entries) / 3
 
 dispatch_visual:
+    ;; Story 3.3 — table grows 1 → 20 entries: Esc (existing) +
+    ;; $ + digits 0..9 + G + b + g + h/j/k/l + w. All motion / digit /
+    ;; motion-prefix handlers are mode-agnostic by Story 2.5/2.6/2.7
+    ;; design — they read cursor_offset and count_accumulator from
+    ;; state.inc and update cursor_offset directly; their shared
+    ;; tail-JP target (edits_compose_or_clear) now branches on
+    ;; mode_byte and dispatches to visual_extend instead of
+    ;; parser_clear when MODE_VISUAL is active (see src/edits.asm).
+    ;; Operators (d/y/c/>/</~) deliberately remain unbound here —
+    ;; they fall through to unbound_visual until Stories 3.6-3.8
+    ;; wire visual_apply_operator. Forward-referenced via sjasmplus
+    ;; two-pass for symbols defined later in the AR25 chain
+    ;; (visual.asm) — backward-resolved for parser.asm / motions.asm
+    ;; (defined earlier).
     DEFW    unbound_visual
 .entries:
     DEFB    0x1B                        ; Esc — return to NORMAL (FR16)
     DEFW    enter_normal_mode
+    ASSERT  '$' > 0x1B
+    DEFB    '$'                         ; '$'     — line-end motion (FR21, Story 2.6)
+    DEFW    motion_dollar
+    ASSERT  '0' > '$'
+    DEFB    '0'                         ; '0'     — count digit / line-start motion
+    DEFW    parser_handle_digit         ; (Story 2.6: line-start handled inside parser fsm)
+    ASSERT  '1' > '0'
+    DEFB    '1'
+    DEFW    parser_handle_digit
+    ASSERT  '2' > '1'
+    DEFB    '2'
+    DEFW    parser_handle_digit
+    ASSERT  '3' > '2'
+    DEFB    '3'
+    DEFW    parser_handle_digit
+    ASSERT  '4' > '3'
+    DEFB    '4'
+    DEFW    parser_handle_digit
+    ASSERT  '5' > '4'
+    DEFB    '5'
+    DEFW    parser_handle_digit
+    ASSERT  '6' > '5'
+    DEFB    '6'
+    DEFW    parser_handle_digit
+    ASSERT  '7' > '6'
+    DEFB    '7'
+    DEFW    parser_handle_digit
+    ASSERT  '8' > '7'
+    DEFB    '8'
+    DEFW    parser_handle_digit
+    ASSERT  '9' > '8'
+    DEFB    '9'                         ; '9'     — count digit (Story 1.10 / 2.6)
+    DEFW    parser_handle_digit
+    ASSERT  'G' > '9'
+    DEFB    'G'                         ; 'G'     — go to line / EOF (FR23, Story 2.6)
+    DEFW    motion_G
+    ASSERT  'b' > 'G'
+    DEFB    'b'                         ; 'b'     — back-word motion (FR20, Story 2.6)
+    DEFW    motion_b
+    ASSERT  'g' > 'b'
+    DEFB    'g'                         ; 'g'     — motion-prefix (gg = motion_gg, Story 2.6)
+    DEFW    parser_handle_motion_prefix
+    ASSERT  'h' > 'g'
+    DEFB    'h'                         ; 'h'     — cursor left (FR18, Story 2.5)
+    DEFW    motion_h
+    ASSERT  'j' > 'h'
+    DEFB    'j'                         ; 'j'     — cursor down (FR18, Story 2.5)
+    DEFW    motion_j
+    ASSERT  'k' > 'j'
+    DEFB    'k'                         ; 'k'     — cursor up (FR18, Story 2.5)
+    DEFW    motion_k
+    ASSERT  'l' > 'k'
+    DEFB    'l'                         ; 'l'     — cursor right (FR18, Story 2.5)
+    DEFW    motion_l
+    ASSERT  'w' > 'l'
+    DEFB    'w'                         ; 'w'     — forward-word motion (FR20, Story 2.6)
+    DEFW    motion_w
 DISPATCH_VISUAL_COUNT EQU ($ - .entries) / 3

@@ -313,7 +313,9 @@
 ;                     KIND_LINE — yank-kind discriminators; YANK_BUFFER_SIZE
 ;                     — over-capacity threshold)
 ;   inc/modes.inc    (MODE_NORMAL — written on edits_insert_literal /
-;                     edits_insert_newline overflow exit)
+;                     edits_insert_newline overflow exit;
+;                     MODE_VISUAL — Story 3.3, READ by
+;                     edits_compose_or_clear's bare-motion arm)
 ;   src/gapbuf.asm   (gapbuf_insert, gapbuf_delete — the AR14
 ;                     mutation surface)
 ;   src/motions.asm  (motion_byte_at_logical, motion_find_line_start,
@@ -351,6 +353,13 @@
 ;                     forward-references resolve via sjasmplus's
 ;                     two-pass model.)
 ;   src/parser.asm   (parser_clear — tail-JP target on overflow paths)
+;   src/visual.asm   (Story 3.3 — visual_extend forward-referenced
+;                     from edits_compose_or_clear's new MODE_VISUAL
+;                     arm; resolves via sjasmplus two-pass since
+;                     visual.asm INCLUDEs AFTER edits.asm in the
+;                     AR25 chain. The arm fires only when mode_byte
+;                     == MODE_VISUAL; NORMAL bare motions still
+;                     tail-JP parser_clear unchanged.)
 ; ============================================================
 
 ;; ============================================================
@@ -1295,8 +1304,9 @@ op_yy:
 ; ----------------------------------------------------------------
 ; edits_compose_or_clear
 ; Shared compose tail. Reads pending_operator and routes to the
-; per-operator body (or parser_clear for bare motion). Tail-JP
-; target of every motion handler's exit point.
+; per-operator body (or — on bare motion — branches on mode_byte:
+; MODE_VISUAL → visual_extend; else parser_clear). Tail-JP target
+; of every motion handler's exit point.
 ;
 ; State-discipline (critical): reads pending_operator BEFORE any
 ; tail-JP parser_clear. Per-operator bodies also read
@@ -1306,22 +1316,47 @@ op_yy:
 ; 'c' / '>' / '<' ever land in pending_operator via parser_handle_operator
 ; — but is kept as the silent fall-through per AC2.
 ;
+; Story 3.3 — MODE_VISUAL routing:
+;   On bare motion (pending_operator == 0), the legacy single-arm
+;   "JP parser_clear" splits into a 2-way branch on mode_byte. When
+;   MODE_VISUAL is active, control transfers to visual_extend
+;   (src/visual.asm) which recomputes |cursor - anchor| + 1 and
+;   refreshes the "-- visual -- N" status row before tail-JPing
+;   parser_clear itself; otherwise the NORMAL-mode bare-motion path
+;   tail-JPs parser_clear directly (zero behaviour change). The
+;   MODE_INSERT and MODE_COMMAND paths are unreachable on this code
+;   path — motion handlers are only bound in dispatch_normal /
+;   dispatch_visual; dispatch_insert and dispatch_command never
+;   route any key to a motion handler. The CP MODE_VISUAL 2-way
+;   branch is exhaustive in practice; the else arm remains the
+;   defensible "JP parser_clear" tail.
+;
 ; In:      pending_operator already set by parser_handle_operator
 ;          (or 0 for the bare-motion path); cursor_offset = motion's
 ;          landing offset; motions_compose_entry = entry cursor.
 ; Out:     control transferred to per-operator body OR JP parser_clear
-;          for bare motion. Per-operator bodies tail-JP parser_clear
+;          for bare motion in NORMAL OR JP visual_extend for bare
+;          motion in VISUAL. Per-operator bodies tail-JP parser_clear
 ;          themselves (op_compose_c tail-JPs enter_insert_mode which
-;          itself tail-JPs parser_clear).
-; Trashes: A, F (+ per-operator body trashes).
+;          itself tail-JPs parser_clear); visual_extend tail-JPs
+;          parser_clear after its compose pass.
+; Trashes: A, F (+ per-operator body / visual_extend trashes).
 ; Calls:   op_compose_d / op_compose_y / op_compose_c / op_compose_indent
-;          / op_compose_dedent (JP); parser_clear (JP — bare motion +
+;          / op_compose_dedent (JP); visual_extend (JP — Story 3.3
+;          MODE_VISUAL arm); parser_clear (JP — bare motion NORMAL +
 ;          defensive 'else' arm).
 ; ----------------------------------------------------------------
 edits_compose_or_clear:
     LD      A, (pending_operator)
     OR      A
-    JP      Z, parser_clear             ; bare motion — zero behaviour change
+    JR      NZ, .has_operator           ; existing operator dispatch arm
+    ;; Bare motion — Story 3.3: route to visual_extend when in MODE_VISUAL,
+    ;; else fall through to parser_clear as the NORMAL-mode tail.
+    LD      A, (mode_byte)
+    CP      MODE_VISUAL
+    JP      Z, visual_extend            ; VISUAL: recompute count + status
+    JP      parser_clear                ; NORMAL: existing behaviour
+.has_operator:
     CP      'd'
     JP      Z, op_compose_d
     CP      'y'

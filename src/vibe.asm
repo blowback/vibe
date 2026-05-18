@@ -42,8 +42,9 @@
 ;   src/gapbuf.asm (Story 1.7); src/render.asm (Story 1.11);
 ;   src/dispatch.asm (Story 1.9); src/parser.asm (Story 1.10);
 ;   src/motions.asm (Story 2.5); src/edits.asm (Story 2.8);
-;   src/search.asm (Story 3.1); src/exline.asm (Story 2.1);
-;   src/fileio.asm (Story 2.2); src/undo.asm (Story 2.13)
+;   src/visual.asm (Story 3.3); src/search.asm (Story 3.1);
+;   src/exline.asm (Story 2.1); src/fileio.asm (Story 2.2);
+;   src/undo.asm (Story 2.13)
 ; ============================================================
 
 ;; --- Compile-time-constant includes (dependency order per AR25) ---
@@ -135,28 +136,41 @@
     INCLUDE "motions.asm"
 
 ;; --- Buffer edits (FR13, FR16, FR24-FR27; edits.asm — Story 2.8) ---
-; AR25 order: motions -> edits -> search -> exline. Story 2.8 lands
-; the i / a / o / O entry handlers + the INSERT-mode literal /
-; Backspace / Enter handlers — VIBE's first true edit-and-save
-; round-trip surface. dispatch_normal's a / o / O entries forward-
-; reference edits_enter_insert_after / edits_open_below /
+; AR25 order: motions -> edits -> visual -> search -> exline. Story
+; 2.8 lands the i / a / o / O entry handlers + the INSERT-mode
+; literal / Backspace / Enter handlers — VIBE's first true edit-
+; and-save round-trip surface. dispatch_normal's a / o / O entries
+; forward-reference edits_enter_insert_after / edits_open_below /
 ; edits_open_above; dispatch_insert's Backspace / Enter entries
 ; forward-reference edits_insert_backspace / edits_insert_newline;
 ; unbound_insert's body forward-references edits_insert_literal.
-; Story 3.1 lands search.asm in the slot between edits and exline
-; per the long-planned position (visual modules will slot here too
-; when they arrive later in Epic 3).
+; Story 3.3 slots visual.asm between edits.asm and search.asm per
+; the long-planned architecture.md:946 position; edits_compose_or_clear
+; gained a MODE_VISUAL routing arm that forward-references visual_extend.
     INCLUDE "edits.asm"
 
+;; --- Visual-mode entry + extent helpers (FR15, FR33; visual.asm — Story 3.3) ---
+; AR25 order: edits -> visual -> search -> exline -> fileio -> undo.
+; visual.asm slots between edits.asm and search.asm per the long-
+; planned architecture.md:946 position. dispatch_normal's 'v' entry
+; (Story 3.3 retired the enter_visual_mode stub in dispatch.asm)
+; forward-references visual_enter_char; dispatch_visual's 19 new
+; motion / digit / motion-prefix entries forward-reference symbols
+; in motions.asm and parser.asm (backward-resolved); the
+; edits_compose_or_clear MODE_VISUAL arm forward-references
+; visual_extend. All forward refs resolve via sjasmplus's two-pass
+; model. Stories 3.4 / 3.5 / 3.6+ will land V (line) / Ctrl-V (block)
+; / operator surfaces in adjacent labels in this module.
+    INCLUDE "visual.asm"
+
 ;; --- Forward literal search (FR41; search.asm — Story 3.1) ---
-; AR25 order: edits -> search -> exline -> fileio -> undo.
-; search.asm slots between edits.asm and exline.asm in the long-
-; planned AR25 position. dispatch_normal's '/' entry forward-
-; references search_begin; exline_dispatch's top-of-routine
-; submode branch forward-references search_commit; both resolve
-; via sjasmplus's two-pass model. search_forward_from is the
-; Story-3.2 (`n` repeat-last-search) hand-off helper — its signature
-; is the contract Story 3.2 inherits.
+; AR25 order: visual -> search -> exline -> fileio -> undo (per
+; architecture.md:946; Story 3.3 inserted visual.asm above).
+; dispatch_normal's '/' entry forward-references search_begin;
+; exline_dispatch's top-of-routine submode branch forward-references
+; search_commit; both resolve via sjasmplus's two-pass model.
+; search_forward_from is the Story-3.2 (`n` repeat-last-search)
+; hand-off helper — its signature is the contract Story 3.2 inherits.
     INCLUDE "search.asm"
 
 ;; --- Ex command-line (FR14, FR3, FR8; exline.asm — Story 2.1) ---
