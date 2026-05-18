@@ -197,7 +197,29 @@
 ;                     route to parser_handle_operator (Story 2.11
 ;                     op+motion compose path); the visual bindings
 ;                     are deliberately separate handlers and bypass
-;                     parser's pending_operator state machine.)
+;                     parser's pending_operator state machine.
+;                     Story 3.7 — visual_apply_shift lands as the
+;                     two new dispatch_visual entries for '<' / '>'
+;                     (FR37 — line-class shift; the dedicated VISUAL
+;                     dispatcher in src/visual.asm that line-promotes
+;                     the selection submode-agnostically via two
+;                     motion_find_line_start calls + SBC-and-swap,
+;                     then dispatches the appropriate mode byte
+;                     (0 indent / 1 dedent) into the Story-2.11
+;                     edits_indent_walk helper for per-line work).
+;                     Fifth forward-ref symbol from this module into
+;                     src/visual.asm after visual_enter_char (3.3) /
+;                     visual_enter_line (3.4) / visual_enter_block
+;                     (3.5) / visual_apply_operator (3.6). Both
+;                     entries DEFW the SAME symbol — A on entry is
+;                     the operator byte ('<' | '>') (MC4), and the
+;                     body internal-branches on it for mode byte
+;                     and undo-kind selection. dispatch_visual count
+;                     grows 23 → 25; sorted insertions place '<'
+;                     between '9' and 'G', and '>' between '<' and
+;                     'G'. dispatch_normal UNCHANGED — '>' / '<' in
+;                     NORMAL still route to parser_handle_operator
+;                     (Story 2.11 op+motion compose path).)
 ; ============================================================
 
 ;; ============================================================
@@ -676,11 +698,16 @@ dispatch_visual:
     ;; Story 3.6 — operators `d` / `y` / `c` bind to
     ;; visual_apply_operator (FR36; the single shared dispatcher in
     ;; src/visual.asm that branches on submode → CHAR / LINE / BLOCK
-    ;; arms). `>` / `<` (Story 3.7) and `~` (Story 3.8) remain
-    ;; deferred — they fall through to unbound_visual until those
-    ;; stories land. Forward-referenced via sjasmplus two-pass for
-    ;; symbols defined later in the AR25 chain (visual.asm) —
-    ;; backward-resolved for parser.asm / motions.asm (defined earlier).
+    ;; arms).
+    ;; Story 3.7 — operators `>` / `<` bind to visual_apply_shift
+    ;; (FR37; line-class shift via edits_indent_walk; the single
+    ;; shared dispatcher in src/visual.asm that line-promotes the
+    ;; selection submode-agnostically and dispatches the mode-byte
+    ;; to the Story-2.11 helper). `~` (Story 3.8) remains deferred —
+    ;; it falls through to unbound_visual until that story lands.
+    ;; Forward-referenced via sjasmplus two-pass for symbols defined
+    ;; later in the AR25 chain (visual.asm) — backward-resolved for
+    ;; parser.asm / motions.asm (defined earlier).
     DEFW    unbound_visual
 .entries:
     DEFB    0x1B                        ; Esc — return to NORMAL (FR16)
@@ -718,7 +745,13 @@ dispatch_visual:
     ASSERT  '9' > '8'
     DEFB    '9'                         ; '9'     — count digit (Story 1.10 / 2.6)
     DEFW    parser_handle_digit
-    ASSERT  'G' > '9'
+    ASSERT  '<' > '9'
+    DEFB    '<'                         ; '<'     — visual dedent (FR37, Story 3.7)
+    DEFW    visual_apply_shift
+    ASSERT  '>' > '<'
+    DEFB    '>'                         ; '>'     — visual indent (FR37, Story 3.7)
+    DEFW    visual_apply_shift
+    ASSERT  'G' > '>'
     DEFB    'G'                         ; 'G'     — go to line / EOF (FR23, Story 2.6)
     DEFW    motion_G
     ASSERT  'b' > 'G'

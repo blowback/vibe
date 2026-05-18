@@ -43,7 +43,34 @@
 ;          LD (gap_end),` against src/visual.asm returns zero
 ;          matches); the operator path mutates the buffer
 ;          exclusively through the existing AR14-clean
-;          edits_range_delete helper (Story 2.10 / 2.11). AR13
+;          edits_range_delete helper (Story 2.10 / 2.11).
+;
+;          Story 3.7 — visual_apply_shift (`>` / `<`) lands.
+;          visual.asm gains a second transitive-writer path via
+;          edits_indent_walk → gapbuf_insert / gapbuf_delete
+;          (line-class shift; INDENT_BYTE = 0x20 per
+;          inc/equates.inc:75 — consistent with the four existing
+;          NORMAL-mode shift entry points op_compose_indent /
+;          op_compose_dedent / op_indent_line / op_dedent_line and
+;          per Forth-source convention; tab support is a Growth-tier
+;          knob). AR14 ownership of gap_start / gap_end REMAINS
+;          with gapbuf.asm (no direct writes from visual.asm); the
+;          second mutation path joins the existing Story 3.6
+;          edits_range_delete → gapbuf_delete path. Per-line work
+;          is inherited verbatim from Story 2.11's edits_indent_walk
+;          (including the .iw_dedent CP INDENT_BYTE skip guard
+;          that realises the epic-AC "silent per-line no-op for `<`
+;          on lines without leading INDENT_BYTE"). Undo via the
+;          Story 2.13 Q6 Option B UNDO_KIND_INDENT_WALK /
+;          _DEDENT_WALK records (the shared edits_record_walk
+;          reads edits_indent_walk_end as the post-walk
+;          authoritative end); replay via
+;          undo_replay_indent_walk / _dedent_walk (mode-flipped
+;          re-walk). VIS_BLOCK's column range is IGNORED for shift
+;          — vi-faithful at line-start, documented inline. Story
+;          3.7's projection is submode-agnostic: both anchor and
+;          cursor are projected via motion_find_line_start (no-op-ish
+;          for VIS_LINE; actual walk for VIS_CHAR / VIS_BLOCK). AR13
 ;          (BIOS_CONOUT) + AR15 (raw BDOS) remain clean. Side
 ;          effects extend beyond Story 3.5's set to also include
 ;          writes to yank_kind / yank_length / yank_buffer (via
@@ -75,8 +102,12 @@
 ;                         ; cascade with a .block_arm for VIS_BLOCK)
 ;   visual_apply_operator ; LANDS Story 3.6 — (d / y / c on VIS_CHAR /
 ;                         ; VIS_LINE / VIS_BLOCK selections; FR36).
-;                         ; Siblings for > / < (Story 3.7) and ~
-;                         ; (Story 3.8) remain placeholders.
+;   visual_apply_shift    ; LANDS Story 3.7 — (> / < on VIS_CHAR /
+;                         ; VIS_LINE / VIS_BLOCK selections; FR37 —
+;                         ; line-class shift via edits_indent_walk;
+;                         ; VIS_BLOCK column range IGNORED).
+;                         ; The sibling visual_apply_case_toggle for
+;                         ; ~ (Story 3.8) remains a placeholder.
 ;
 ;   (visual_cancel is NOT a separate symbol per Q7 pin Option A —
 ;    src/dispatch.asm:enter_normal_mode handles VISUAL→NORMAL
@@ -156,6 +187,20 @@
 ;   Story 3.5 visual_block_* cells are an INDEPENDENT scratch group
 ;   reused only inside visual_count_block_dims; the Story 3.6
 ;   visual_op_block_* cells are for the pass-1 / pass-2 loop state.
+;
+;   Story 3.7 reuses two Story-3.6 cells with the same one-dispatch
+;   lifecycle:
+;     visual_op_pending      ; operator-byte stash ('<' | '>') across
+;                            ; the body's CP branches (mode-byte +
+;                            ; undo-kind selection).
+;     visual_op_range_start  ; promoted_start stash across the
+;                            ; edits_indent_walk CALL (which trashes
+;                            ; HL/DE); read at the cursor-restore step.
+;   The five Story-2.11/2.13 edits_indent_* cells declared in
+;   src/edits.asm (edits_indent_undo_start / _end / _walk_mode /
+;   _walk_dirty / _walk_end) are also reused by visual_apply_shift
+;   via the existing edits_indent_walk + edits_record_walk helpers —
+;   Story 3.7 introduces no new cells in either module.
 ;
 ; State read-only:
 ;   cursor_offset         ; read by visual_enter_char (anchor pin)
@@ -280,6 +325,43 @@
 ;                enter_normal_mode (tail-JP for `d` / `y`);
 ;                enter_insert_mode (tail-JP for `c`).
 ;
+;   visual_apply_shift:  (Story 3.7 — FR37)
+;       In:      A = operator byte ('<' | '>' from MC4 via dispatch_visual).
+;       Out:     every line whose start is in [promoted_start,
+;                promoted_end) is shifted right ('>') or left ('<')
+;                by one INDENT_BYTE (0x20); promoted_start =
+;                min(motion_find_line_start(visual_anchor),
+;                motion_find_line_start(cursor_offset));
+;                promoted_end = motion_find_line_end(max_ls) + 1.
+;                For '<', lines whose first byte is NOT INDENT_BYTE
+;                are silent per-line no-ops (inherited from
+;                edits_indent_walk's .iw_dedent skip guard). VIS_BLOCK's
+;                column range is IGNORED — shift acts at line-start.
+;                cursor_offset = promoted_start (top of selection,
+;                column 0 — FNW divergence deferred). mode_byte =
+;                MODE_NORMAL via enter_normal_mode tail-JP.
+;                buffer_dirty = 1 + render dirty-rows marked iff
+;                edits_indent_walk_dirty == 1; undo recorded as
+;                UNDO_KIND_INDENT_WALK / UNDO_KIND_DEDENT_WALK via
+;                edits_record_walk on the dirty path; no-op walks
+;                leave undo EMPTY (pre-walk undo_clear). visual_anchor
+;                and visual_submode left AS-IS (zombie state per
+;                Story 3.5/3.6 precedent). yank register UNTOUCHED
+;                (distinct from visual_apply_operator).
+;       Trashes: A, BC, DE, HL, F + module-local cells (visual_op_pending,
+;                visual_op_range_start, edits_indent_undo_start / _end,
+;                edits_indent_walk_mode / _dirty / _end).
+;       Calls:   motion_find_line_start (CALL × 2 — anchor + cursor
+;                projection);
+;                motion_find_line_end (CALL × 1 — MAX line-start →
+;                its line-end);
+;                undo_clear (CALL — pre-walk; FR45 invariant);
+;                edits_indent_walk (CALL — Story 2.11 per-line walk);
+;                edits_record_walk (CALL on dirty path — Story 2.13
+;                Q6 Option B shared helper);
+;                edits_dirty_and_redraw (CALL on dirty path);
+;                enter_normal_mode (JP tail).
+;
 ; Dependencies:
 ;   inc/state.inc    (cursor_offset, visual_anchor, visual_submode,
 ;                     mode_byte (writer), status_compose_scratch —
@@ -308,6 +390,11 @@
 ;                     entries per AC13 from Story 2.5).
 ;   src/edits.asm    (Story 3.6 NEW — edits_copy_to_yank,
 ;                     edits_range_delete, edits_dirty_and_redraw.
+;                     Story 3.7 NEW — edits_indent_walk (Story 2.11
+;                     per-line shift helper) and edits_record_walk
+;                     (Story 2.13 Q6 Option B shared post-walk undo
+;                     record helper). Both backward-resolved by the
+;                     AR25 chain (edits.asm INCLUDEs before visual.asm).
 ;                     Backward-resolved: edits.asm INCLUDEs at
 ;                     vibe.asm line 150; visual.asm INCLUDEs at
 ;                     vibe.asm line 164 — so edits.asm symbols are
@@ -1113,6 +1200,147 @@ _visual_op_delete_yank_or_change:
     LD      A, MODE_NORMAL
     LD      (mode_byte), A
     JP      parser_clear
+
+
+;; ============================================================
+;; --- Public entry: visual_apply_shift (Story 3.7 — `>` / `<`) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; visual_apply_shift
+; Visual-mode line-class shift. Submode-agnostic: anchor and cursor
+; are both projected through motion_find_line_start (no-op-ish for
+; VIS_LINE's already-aligned anchor; actual walk for VIS_CHAR /
+; VIS_BLOCK), SBC-and-swap yields (promoted_start, walker), the
+; walker's line-end is found, promoted_end = HL + 1 unconditionally
+; (works for both LF-terminated and at-EOF cases — the per-line walk
+; in edits_indent_walk operates on line_starts in [start, end), and
+; bottom_line_ls < promoted_end whenever the bottom line is part of
+; the range). VIS_BLOCK's column range is IGNORED — vi-faithful for
+; shift (distinct from the per-row column-bounded path Story 3.6
+; uses for d/y/c and Story 3.8 will use for `~`).
+;
+; Per-line work delegated to edits_indent_walk (Story 2.11 helper,
+; mode byte 0 = indent / 1 = dedent). Undo recorded via the shared
+; edits_record_walk (Story 2.13 Q6 Option B) — kind UNDO_KIND_INDENT_WALK
+; for `>` or UNDO_KIND_DEDENT_WALK for `<`. The walk's dirty flag
+; (edits_indent_walk_dirty) determines whether record_walk +
+; edits_dirty_and_redraw fire — on no-op walks (e.g. `<` over a
+; selection whose lines all lack a leading INDENT_BYTE) the undo
+; register stays EMPTY from the pre-walk undo_clear (Q3 Option A;
+; mirrors op_compose_indent.ci_walk precedent — every mutating op
+; records SOMETHING including EMPTY).
+;
+; Cursor lands at promoted_start (= line-start of the topmost
+; selected line) per Q2 Option A — vi-faithful "top of selection"
+; column 0. The FNW (first-non-whitespace) divergence is the same
+; gap Story 2.11 NORMAL-mode `>>`/`<<` carries; deferred to a polish
+; story.
+;
+; Mode flips to NORMAL via the enter_normal_mode tail-JP. Per Q1
+; Option A — accept the msg_file_too_large clobber on partial-overflow
+; walks (matches op_compose_indent precedent; flag-based carve-out
+; deferred).
+;
+; AR23 contract (also documented in module-header Register conventions).
+; In:      A = operator byte ('<' | '>' — MC4 from dispatch_visual).
+; Out:     every line whose start is in [min(anchor_ls, cursor_ls),
+;          max_ls_line_end + 1) is shifted right ('>') or left ('<')
+;          by one INDENT_BYTE; for '<' lines without leading INDENT_BYTE
+;          are silent per-line no-ops via edits_indent_walk's
+;          .iw_dedent CP INDENT_BYTE skip guard. cursor_offset =
+;          promoted_start; mode_byte = MODE_NORMAL via enter_normal_mode
+;          tail-JP. Undo recorded as UNDO_KIND_INDENT_WALK /
+;          UNDO_KIND_DEDENT_WALK iff edits_indent_walk_dirty == 1
+;          (no-op walks leave undo EMPTY).
+; Trashes: A, BC, DE, HL, F + module-local cells (visual_op_pending,
+;          visual_op_range_start, edits_indent_undo_start / _end,
+;          edits_indent_walk_mode / _dirty / _end).
+; Calls:   motion_find_line_start (CALL × 2 — anchor + cursor projection);
+;          motion_find_line_end (CALL × 1 — MAX line-start → its line-end);
+;          undo_clear (CALL);
+;          edits_indent_walk (CALL);
+;          edits_record_walk (CALL on dirty path);
+;          edits_dirty_and_redraw (CALL on dirty path);
+;          enter_normal_mode (JP tail).
+; ----------------------------------------------------------------
+visual_apply_shift:
+    LD      (visual_op_pending), A          ; stash operator byte ('<' | '>')
+
+    ;; Project anchor and cursor to line-starts (submode-agnostic).
+    LD      HL, (visual_anchor)
+    CALL    motion_find_line_start          ; HL = anchor_ls
+    PUSH    HL                              ; [anchor_ls]
+    LD      HL, (cursor_offset)
+    CALL    motion_find_line_start          ; HL = cursor_ls
+    POP     DE                              ; DE = anchor_ls; HL = cursor_ls
+
+    ;; SBC-and-swap: pick min as promoted_start, MAX as walker.
+    PUSH    HL                              ; [cursor_ls]
+    OR      A
+    SBC     HL, DE                          ; HL = cursor_ls - anchor_ls (signed)
+    POP     HL                              ; HL = cursor_ls; flags preserved
+    JR      C, .vsh_backward
+    ;; Forward / equal: promoted_start = anchor_ls (DE); walker = cursor_ls (HL).
+    LD      (visual_op_range_start), DE
+    JR      .vsh_walk_end
+.vsh_backward:
+    ;; Backward (cursor_ls < anchor_ls): promoted_start = cursor_ls (HL);
+    ;; walker = anchor_ls (DE).
+    LD      (visual_op_range_start), HL
+    EX      DE, HL                          ; HL = anchor_ls (walker)
+.vsh_walk_end:
+    ;; HL = walker (MAX line-start). Walk to its line-end.
+    CALL    motion_find_line_end            ; HL = LF pos OR file_length (CF=1 no-LF)
+    INC     HL                              ; promoted_end = HL + 1 (unconditional)
+    EX      DE, HL                          ; DE = promoted_end
+    LD      HL, (visual_op_range_start)     ; HL = promoted_start
+
+    ;; Stash undo metadata mirroring op_compose_indent.ci_walk. The
+    ;; cell-based start/end pair is the Story 2.11 contract; the
+    ;; post-walk authority for length is edits_indent_walk_end
+    ;; (Story 2.13 Q6 Option B). edits_indent_undo_end is kept for
+    ;; callsite-symmetry (dead-store post-Q6; cleanup logged as
+    ;; deferred-work polish).
+    LD      (edits_indent_undo_start), HL
+    EX      DE, HL                          ; HL = end
+    LD      (edits_indent_undo_end), HL
+    EX      DE, HL                          ; restore HL = start, DE = end
+    CALL    undo_clear                      ; pre-walk: undo := EMPTY
+
+    ;; Operator byte → mode byte: '>' = 0 (indent), '<' = 1 (dedent).
+    ;; LD A,imm does not touch flags, so the Z from CP '<' survives
+    ;; to the JR NZ check.
+    LD      A, (visual_op_pending)
+    CP      '<'
+    LD      A, 0                            ; default = indent mode
+    JR      NZ, .vsh_mode_ready
+    INC     A                               ; A = 1 = dedent mode
+.vsh_mode_ready:
+    CALL    edits_indent_walk
+
+    ;; Dirty check — on no-op walk (e.g. `<` across lines with no
+    ;; leading INDENT_BYTE) skip record + redraw; undo stays EMPTY.
+    LD      A, (edits_indent_walk_dirty)
+    OR      A
+    JR      Z, .vsh_no_change
+
+    ;; Operator byte → undo kind. Same CP shape; LD A,imm preserves Z.
+    LD      A, (visual_op_pending)
+    CP      '<'
+    LD      A, UNDO_KIND_INDENT_WALK
+    JR      NZ, .vsh_have_kind
+    LD      A, UNDO_KIND_DEDENT_WALK
+.vsh_have_kind:
+    CALL    edits_record_walk               ; reads edits_indent_walk_end (Q6 Option B)
+    CALL    edits_dirty_and_redraw
+
+.vsh_no_change:
+    ;; Cursor at promoted_start (vi-faithful top-of-selection column 0;
+    ;; FNW deferred).
+    LD      HL, (visual_op_range_start)
+    LD      (cursor_offset), HL
+    JP      enter_normal_mode               ; tail-JP — flips mode, parser_clear
 
 
 ;; ============================================================
