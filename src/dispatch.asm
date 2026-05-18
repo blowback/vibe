@@ -169,7 +169,19 @@
 ;                     visual selection; slot count grows 28 → 29;
 ;                     slot between 'O' and 'a'). 'V' deliberately
 ;                     NOT bound in dispatch_visual — v↔V submode-
-;                     toggle deferred to polish per Q1 Option A.)
+;                     toggle deferred to polish per Q1 Option A.
+;                     Story 3.5 — visual_enter_block lands as the
+;                     new dispatch_normal[0x16] (Ctrl-V) entry
+;                     (FR35; rectangular visual selection; slot
+;                     between 0x0C and '$'). Third and final visual
+;                     forward-ref symbol in this module after
+;                     visual_enter_char (3.3) and visual_enter_line
+;                     (3.4) — the VIS_CHAR/VIS_LINE/VIS_BLOCK
+;                     submode-writer triad is complete. Ctrl-V
+;                     deliberately NOT bound in dispatch_visual —
+;                     v↔V↔Ctrl-V submode-toggle still deferred to
+;                     polish per Q3 Option A (carries forward Story
+;                     3.4's Q1 pin).)
 ; ============================================================
 
 ;; ============================================================
@@ -497,7 +509,10 @@ dispatch_normal:
 .entries:
     DEFB    0x0C                        ; Ctrl-L  — full refresh stub (FR48)
     DEFW    mode_full_refresh_stub
-    ASSERT  '$' > 0x0C
+    ASSERT  0x16 > 0x0C
+    DEFB    0x16                        ; Ctrl-V  — enter visual block mode (FR35, Story 3.5)
+    DEFW    visual_enter_block          ; forward ref into src/visual.asm
+    ASSERT  '$' > 0x16
     DEFB    '$'                         ; '$'     — motion to line-end (FR21, Story 2.6)
     DEFW    motion_dollar
     ASSERT  '/' > '$'

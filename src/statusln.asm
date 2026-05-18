@@ -56,7 +56,13 @@
 ;     retired when src/dispatch.asm's enter_visual_mode stub left),
 ;     msg_mode_visual_line_prefix (Story 3.4 — "-- visual line -- "
 ;     with trailing space; LINE submode banner read by
-;     src/visual.asm's visual_compose_status_line entry)
+;     src/visual.asm's visual_compose_status_line entry),
+;     msg_mode_visual_block_prefix (Story 3.5 — "-- visual block -- "
+;     with trailing space; BLOCK submode banner read by
+;     src/visual.asm's visual_compose_status_block entry — rows-x-cols
+;     format requires two numeric params with an 'x' separator,
+;     hence a dedicated standalone compose body rather than the
+;     CHAR/LINE shared tail)
 ;
 ; State owned (read/write):
 ;   status_buffer        ; 80-byte row buffer; writer = this module only (AR12)
@@ -348,6 +354,15 @@ msg_mode_visual_prefix: DEFB "-- visual -- ", 0
 ; one line above — same family, explicit unit. Read by the new
 ; visual_compose_status_line entry in src/visual.asm.
 msg_mode_visual_line_prefix: DEFB "-- visual line -- ", 0
+; Story 3.5 — VIS_BLOCK submode prefix. 19 ASCII chars + NUL = 20 B.
+; visual_compose_status_block LDIRs the first 19 bytes (without the
+; NUL) into status_compose_scratch; the rows digits follow at
+; offset 19; then a literal 'x' separator; then the cols digits;
+; then visual_compose_status_block writes its own NUL terminator
+; and hands off to status_set_message. Parallels
+; msg_mode_visual_line_prefix two lines above — same family, one
+; extra word ("block") between "visual" and the closing "-- ".
+msg_mode_visual_block_prefix: DEFB "-- visual block -- ", 0
 msg_unbound_key:        DEFB "unbound key", 0
 
 ;; --- Story 2.2: bdos_error_funnel override pointer ---
