@@ -181,7 +181,23 @@
 ;                     deliberately NOT bound in dispatch_visual —
 ;                     v↔V↔Ctrl-V submode-toggle still deferred to
 ;                     polish per Q3 Option A (carries forward Story
-;                     3.4's Q1 pin).)
+;                     3.4's Q1 pin).
+;                     Story 3.6 — visual_apply_operator lands as the
+;                     three new dispatch_visual entries for 'c' /
+;                     'd' / 'y' (FR36 — the visual-mode destructive /
+;                     yank-only / change operators). Fourth forward-
+;                     ref symbol from this module into src/visual.asm
+;                     after visual_enter_char (3.3) / visual_enter_line
+;                     (3.4) / visual_enter_block (3.5). The three
+;                     entries all DEFW the SAME symbol — A on entry
+;                     is the operator byte (MC4), and the body
+;                     internal-branches on it then on visual_submode.
+;                     dispatch_visual count grows 20 → 23. dispatch_normal
+;                     UNCHANGED — 'd' / 'y' / 'c' in NORMAL still
+;                     route to parser_handle_operator (Story 2.11
+;                     op+motion compose path); the visual bindings
+;                     are deliberately separate handlers and bypass
+;                     parser's pending_operator state machine.)
 ; ============================================================
 
 ;; ============================================================
@@ -657,12 +673,14 @@ dispatch_visual:
     ;; tail-JP target (edits_compose_or_clear) now branches on
     ;; mode_byte and dispatches to visual_extend instead of
     ;; parser_clear when MODE_VISUAL is active (see src/edits.asm).
-    ;; Operators (d/y/c/>/</~) deliberately remain unbound here —
-    ;; they fall through to unbound_visual until Stories 3.6-3.8
-    ;; wire visual_apply_operator. Forward-referenced via sjasmplus
-    ;; two-pass for symbols defined later in the AR25 chain
-    ;; (visual.asm) — backward-resolved for parser.asm / motions.asm
-    ;; (defined earlier).
+    ;; Story 3.6 — operators `d` / `y` / `c` bind to
+    ;; visual_apply_operator (FR36; the single shared dispatcher in
+    ;; src/visual.asm that branches on submode → CHAR / LINE / BLOCK
+    ;; arms). `>` / `<` (Story 3.7) and `~` (Story 3.8) remain
+    ;; deferred — they fall through to unbound_visual until those
+    ;; stories land. Forward-referenced via sjasmplus two-pass for
+    ;; symbols defined later in the AR25 chain (visual.asm) —
+    ;; backward-resolved for parser.asm / motions.asm (defined earlier).
     DEFW    unbound_visual
 .entries:
     DEFB    0x1B                        ; Esc — return to NORMAL (FR16)
@@ -706,7 +724,13 @@ dispatch_visual:
     ASSERT  'b' > 'G'
     DEFB    'b'                         ; 'b'     — back-word motion (FR20, Story 2.6)
     DEFW    motion_b
-    ASSERT  'g' > 'b'
+    ASSERT  'c' > 'b'
+    DEFB    'c'                         ; 'c'     — change operator (FR36, Story 3.6)
+    DEFW    visual_apply_operator
+    ASSERT  'd' > 'c'
+    DEFB    'd'                         ; 'd'     — delete operator (FR36, Story 3.6)
+    DEFW    visual_apply_operator
+    ASSERT  'g' > 'd'
     DEFB    'g'                         ; 'g'     — motion-prefix (gg = motion_gg, Story 2.6)
     DEFW    parser_handle_motion_prefix
     ASSERT  'h' > 'g'
@@ -724,4 +748,7 @@ dispatch_visual:
     ASSERT  'w' > 'l'
     DEFB    'w'                         ; 'w'     — forward-word motion (FR20, Story 2.6)
     DEFW    motion_w
+    ASSERT  'y' > 'w'
+    DEFB    'y'                         ; 'y'     — yank operator (FR36, Story 3.6)
+    DEFW    visual_apply_operator
 DISPATCH_VISUAL_COUNT EQU ($ - .entries) / 3

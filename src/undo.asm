@@ -47,6 +47,12 @@
 ;   undo_record_indent_walk    ; record an inverse-dedent-walk entry (>> / N>> / >+motion)
 ;   undo_record_dedent_walk    ; record an inverse-indent-walk entry (<< / N<< / <+motion)
 ;   undo_clear                 ; mark entry empty (post-replay; pre-mutation defensive)
+;   undo_write_header          ; direct kind+position+length write (Story 3.6 promoted from
+;                              ; internal helper to public — used by visual_apply_operator's
+;                              ; VIS_BLOCK arm to record UNDO_KIND_TOO_LARGE directly,
+;                              ; bypassing undo_record_delete's payload-copy path because
+;                              ; the block delete is fundamentally non-contiguous and
+;                              ; multi-region undo is deferred per Story 3.6 Q2 Option A)
 ;   undo_insert_exit_record    ; INSERT → NORMAL exit hook (enter_normal_mode + edits_overflow_to_normal)
 ;   insert_session_entry_cursor ; DEFW — entry cursor saved by enter_insert_mode for the exit hook
 ;
@@ -597,13 +603,17 @@ undo_clear:
 
 
 ;; ============================================================
-;; --- Internal helper: undo_write_header (shared per Q1 Option D) -
+;; --- Public: undo_write_header (shared per Q1 Option D) ---
 ;; ============================================================
 ; Shared 11-byte body that writes the 5-byte header trio (kind,
-; position, length). Called from every undo_record_* helper.
+; position, length). Called from every undo_record_* helper, plus
+; Story 3.6's visual_apply_operator VIS_BLOCK arm which uses it
+; to record UNDO_KIND_TOO_LARGE directly without a payload copy
+; (multi-region block-delete undo is deferred per Q2 Option A;
+; logged in deferred-work.md as a future polish story).
 ; Saves ~6 B per call site vs inlining the 3 LD-to-memory writes
-; (3-byte CALL + RET-via-tail-JP, helper body amortised across 6
-; callers).
+; (3-byte CALL + RET-via-tail-JP, helper body amortised across 7+
+; callers post-Story-3.6).
 ;
 ; In:      A = kind; HL = position; BC = length.
 ; Out:     undo_kind := A; undo_position := HL; undo_length := BC.

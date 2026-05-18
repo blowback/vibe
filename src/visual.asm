@@ -34,19 +34,35 @@
 ;          (Stories 3.6+ visual_apply_operator marshals per-row
 ;          ranges from this story's rectangle).
 ;
-;          Pure reader of buffer state — AR13 (no BIOS console),
-;          AR14 (no gap-buffer writes), AR15 (no raw BDOS) all
-;          clean. The only side effects are writes to mode_byte /
-;          visual_submode / visual_anchor (Story 3.3 / 3.4 / 3.5
-;          LANDS — VIS_CHAR / VIS_LINE / VIS_BLOCK writers all live
-;          here now; submode-writer triad complete after Story 3.5)
-;          and to status_buffer / status_dirty via the AR12 funnel
-;          status_set_message, plus the 5 module-local DEFW
-;          projection scratch cells written by visual_count_block_dims
-;          (visual_block_anchor_ls / _anchor_col / _cursor_ls /
-;          _cursor_col / _temp_rows — see Module-local data block
-;          below). Motion handlers (motions.asm) keep full
-;          responsibility for the cursor_offset write.
+;          Story 3.6 — visual_apply_operator (d / y / c) lands.
+;          visual.asm transitions from a PURE READER of buffer
+;          state to a TRANSITIVE WRITER via edits_range_delete →
+;          gapbuf_delete. AR14 ownership of gap_start / gap_end
+;          REMAINS with src/gapbuf.asm (visual.asm contains zero
+;          direct writes to those cells — grep `LD (gap_start),\|
+;          LD (gap_end),` against src/visual.asm returns zero
+;          matches); the operator path mutates the buffer
+;          exclusively through the existing AR14-clean
+;          edits_range_delete helper (Story 2.10 / 2.11). AR13
+;          (BIOS_CONOUT) + AR15 (raw BDOS) remain clean. Side
+;          effects extend beyond Story 3.5's set to also include
+;          writes to yank_kind / yank_length / yank_buffer (via
+;          edits_copy_to_yank for CHAR / LINE arms; via direct
+;          per-row append for the BLOCK arm), to undo_kind /
+;          undo_position / undo_length / undo_buffer (via
+;          undo_record_delete for CHAR / LINE arms; via
+;          undo_write_header for the BLOCK arm UNDO_KIND_TOO_LARGE
+;          direct record per Q2 Option A — multi-region undo
+;          deferred), to cursor_offset (post-op placement —
+;          op_compose_d x-style clamp for CHAR; op_dd three-way
+;          for LINE; rectangle top-left for BLOCK), and via
+;          edits_dirty_and_redraw to buffer_dirty + the render
+;          dirty-rows bitmap. The 12 new module-local cells
+;          (visual_op_pending + visual_op_range_start /
+;          _range_bytes + visual_op_yank_kind + 9 BLOCK-arm
+;          DEFW + 1 DEFB scratch cells) are written by
+;          visual_apply_operator on every call; valid only
+;          between entry and the terminal tail-JP.
 ;
 ; Public:
 ;   visual_enter_char     ; LANDS Story 3.3 — `v` entry, VIS_CHAR
@@ -57,7 +73,10 @@
 ;                         ; routes VIS_CHAR vs VIS_LINE arms; Story
 ;                         ; 3.5 extends the prologue to a 3-way
 ;                         ; cascade with a .block_arm for VIS_BLOCK)
-;   visual_apply_operator ; PLACEHOLDER Stories 3.6-3.8 (d/y/c/>/</~ on a selection)
+;   visual_apply_operator ; LANDS Story 3.6 — (d / y / c on VIS_CHAR /
+;                         ; VIS_LINE / VIS_BLOCK selections; FR36).
+;                         ; Siblings for > / < (Story 3.7) and ~
+;                         ; (Story 3.8) remain placeholders.
 ;
 ;   (visual_cancel is NOT a separate symbol per Q7 pin Option A —
 ;    src/dispatch.asm:enter_normal_mode handles VISUAL→NORMAL
@@ -100,6 +119,43 @@
 ;   every call; values valid ONLY between the helper's entry and
 ;   its RET — caller does NOT read them. Module-local; never
 ;   exported via inc/state.inc.
+;
+;   Module-local operator scratch (Story 3.6 — NOT in state.inc):
+;     visual_op_pending        ; DEFB — operator byte ('c'|'d'|'y')
+;                              ; stashed by visual_apply_operator
+;                              ; prologue; read by the shared
+;                              ; finalisation _visual_op_delete_yank_or_change
+;                              ; to branch between .delete_path /
+;                              ; .change_path / .yank_only.
+;     visual_op_range_start    ; DEFW — HL stash across the
+;                              ; finalisation's sub-CALLs.
+;     visual_op_range_bytes    ; DEFW — BC stash, same purpose.
+;     visual_op_yank_kind      ; DEFB — KIND_CHAR or KIND_LINE
+;                              ; from the CHAR / LINE arms (BLOCK
+;                              ; arm sets yank_kind directly).
+;     visual_op_block_rows     ; DEFW — rows cached from
+;                              ; visual_count_block_dims (Story 3.5
+;                              ; HL return).
+;     visual_op_block_cols     ; DEFW — cols cached from BC return.
+;     visual_op_block_col_min  ; DEFW — min(anchor_col, cursor_col).
+;     visual_op_block_col_max  ; DEFW — max(anchor_col, cursor_col).
+;     visual_op_block_top_ls   ; DEFW — min(anchor_ls, cursor_ls);
+;                              ; line-start of the top row.
+;     visual_op_block_walker   ; DEFW — per-row line-start walker
+;                              ; (pass 1 + pass 2 of the BLOCK arm).
+;     visual_op_block_total_bytes ; DEFW — pass-1 yank-byte accumulator
+;                              ; + final yank_length seed.
+;     visual_op_block_remaining_rows ; DEFW — loop counter for both passes.
+;     visual_op_block_yank_ptr ; DEFW — pass-2 yank_buffer write pointer.
+;     visual_op_block_yank_ok  ; DEFB — 0 = yank refused (over capacity);
+;                              ; 1 = yank ok (within YANK_BUFFER_SIZE).
+;   Lifecycle: cleared and re-written by visual_apply_operator at
+;   every call; values valid ONLY between the helper's entry and
+;   its terminal JP (enter_normal_mode for d/y; enter_insert_mode
+;   for c). Module-local; never exported via inc/state.inc. The
+;   Story 3.5 visual_block_* cells are an INDEPENDENT scratch group
+;   reused only inside visual_count_block_dims; the Story 3.6
+;   visual_op_block_* cells are for the pass-1 / pass-2 loop state.
 ;
 ; State read-only:
 ;   cursor_offset         ; read by visual_enter_char (anchor pin)
@@ -172,6 +228,58 @@
 ;                visual_compose_status_block (BLOCK arm);
 ;                parser_clear (tail-JP all three arms).
 ;
+;   visual_apply_operator:  (Story 3.6 — FR36)
+;       In:      A = operator byte ('c' | 'd' | 'y' from MC4 via
+;                dispatch_visual).
+;       Out:     depends on (operator, submode) — see AC3/AC4/AC5/AC6
+;                in the story spec. On every exit:
+;                mode_byte = MODE_NORMAL ('d', 'y') OR MODE_INSERT ('c');
+;                cursor_offset placed at the deletion-start (== the
+;                projection of min(anchor, cursor) for each submode);
+;                yank register written with the selection content
+;                (KIND_CHAR for VIS_CHAR; KIND_LINE for VIS_LINE;
+;                KIND_BLOCK for VIS_BLOCK — rows joined by LF with no
+;                trailing LF per AC9) UNLESS total bytes exceed
+;                YANK_BUFFER_SIZE — in which case the yank register
+;                is PRESERVED (SR6 "predictable failure mode") and
+;                status surfaces msg_yank_too_large; deletion still
+;                proceeds for `d` / `c` ('y' is read-only by definition).
+;                Undo recorded as UNDO_KIND_DELETE for VIS_CHAR / VIS_LINE
+;                `d` / `c` (phase-2 REPLACE upgrade for `c` fires at
+;                INSERT-exit transitively via undo_insert_exit_record —
+;                inherited from Story 2.13); VIS_BLOCK `d` / `c` records
+;                UNDO_KIND_TOO_LARGE directly via undo_write_header
+;                (multi-region undo deferred per Q2 Option A); `y`
+;                records nothing (yank-only, inherits op_yy semantics).
+;                Parser state cleared (via enter_normal_mode /
+;                enter_insert_mode tail-JPs). visual_submode left
+;                AS-IS — zombie state on VISUAL→NORMAL exit per
+;                Story 3.5 AC10.
+;       Trashes: A, BC, DE, HL, F + the module-local cells listed
+;                in the "State owned" Module-local operator scratch
+;                block above.
+;       Calls:   motion_find_line_start (LINE-arm cursor projection;
+;                BLOCK-arm not used here — visual_count_block_dims
+;                does its own projection internally);
+;                motion_find_line_end (LINE-arm bottom-of-selection
+;                walk; BLOCK-arm per-row line-end probe);
+;                motion_byte_at_logical (BLOCK-arm content read for
+;                KIND_BLOCK per-row yank append);
+;                visual_count_block_dims (BLOCK-arm projection +
+;                rows/cols compute);
+;                edits_copy_to_yank (CHAR / LINE arms — CONTIGUOUS
+;                range; BLOCK arm does its own per-row yank append);
+;                edits_range_delete (CHAR / LINE arms; BLOCK arm
+;                per-row clipped slice);
+;                edits_dirty_and_redraw (success commit);
+;                undo_record_delete (CHAR / LINE arms);
+;                undo_clear (BLOCK arm pre-clear);
+;                undo_write_header (BLOCK arm UNDO_KIND_TOO_LARGE
+;                direct record);
+;                status_set_message (yank-too-large surface);
+;                enter_normal_mode (tail-JP for `d` / `y`);
+;                enter_insert_mode (tail-JP for `c`).
+;
 ; Dependencies:
 ;   inc/state.inc    (cursor_offset, visual_anchor, visual_submode,
 ;                     mode_byte (writer), status_compose_scratch —
@@ -198,6 +306,23 @@
 ;                     BLOCK submode prefix, "-- visual block -- ").
 ;   src/parser.asm   (parser_clear — tail-JP target on both public
 ;                     entries per AC13 from Story 2.5).
+;   src/edits.asm    (Story 3.6 NEW — edits_copy_to_yank,
+;                     edits_range_delete, edits_dirty_and_redraw.
+;                     Backward-resolved: edits.asm INCLUDEs at
+;                     vibe.asm line 150; visual.asm INCLUDEs at
+;                     vibe.asm line 164 — so edits.asm symbols are
+;                     already defined by the time visual.asm is parsed.)
+;   src/undo.asm     (Story 3.6 NEW — undo_clear, undo_record_delete,
+;                     undo_write_header. FORWARD-resolved: undo.asm
+;                     INCLUDEs at vibe.asm line 209 — AFTER visual.asm.
+;                     Forward-resolution via sjasmplus's two-pass
+;                     model. Same shape as op_undo's forward-ref from
+;                     dispatch_normal['u'] (Story 2.13) crossing the
+;                     same AR25 ordering. undo_write_header sits in
+;                     undo.asm's "internal helper" comment but is a
+;                     regular labelled entry with RET — callable from
+;                     outside; Story 3.6 promotes it to the Public
+;                     block in undo.asm's module header.)
 ; ============================================================
 
 ;; ============================================================
@@ -377,6 +502,617 @@ visual_extend:
     CALL    visual_count_block_dims     ; HL = rows; BC = cols
     CALL    visual_compose_status_block ; format "RxC"
     JP      parser_clear                ; AC13: drop any parser state stale from the motion's preamble
+
+
+;; ============================================================
+;; --- Public entry: visual_apply_operator (Story 3.6 — FR36) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; visual_apply_operator
+; Entry from dispatch_visual['c'|'d'|'y'] (src/dispatch.asm). The
+; SINGLE shared dispatcher for the three visual-mode operators:
+; A on entry = the operator byte (MC4). The body stashes A in
+; visual_op_pending (the operator survives across every CALL
+; chain in the arm bodies — A is trashed many times en route),
+; then branches on visual_submode to:
+;   VIS_CHAR  → _visual_op_char_arm  (range = inclusive [min, max+1) of (anchor, cursor); KIND_CHAR)
+;   VIS_LINE  → _visual_op_line_arm  (range = whole-line span; KIND_LINE; op_dd at-EOF carve-out)
+;   VIS_BLOCK → _visual_op_block_arm (per-row clipped deletion; KIND_BLOCK rows-joined-by-LF;
+;                                     UNDO_KIND_TOO_LARGE direct record per Q2 Option A)
+; CHAR / LINE share a common finalisation (_visual_op_delete_yank_or_change)
+; which routes on operator: 'd' = delete + yank + cursor clamp + JP enter_normal_mode;
+; 'c' = same as 'd' but JP enter_insert_mode (Story 2.11 two-phase REPLACE upgrade
+; fires transitively via undo_insert_exit_record at INSERT-exit — inherited from
+; Story 2.13); 'y' = yank-only with cursor restored to range_start (Q1 Option A).
+; BLOCK has its own dedicated finalisation because the per-row mutation pattern
+; doesn't fit the contiguous-range shape of edits_range_delete + undo_record_delete.
+;
+; AR23 contract — see module-header Register conventions block.
+; ----------------------------------------------------------------
+visual_apply_operator:
+    LD      (visual_op_pending), A          ; stash operator byte ('c' | 'd' | 'y')
+    LD      A, (visual_submode)
+    CP      VIS_BLOCK
+    JP      Z, _visual_op_block_arm
+    CP      VIS_LINE
+    JR      Z, _visual_op_line_arm
+    ;; Fall through to CHAR arm (VIS_CHAR == 0; defensive default
+    ;; for any unknown submode value — mirrors visual_extend's
+    ;; 3-way prologue from Story 3.5 AC3).
+    ASSERT  VIS_CHAR == 0
+
+
+; ----------------------------------------------------------------
+; _visual_op_char_arm
+; VIS_CHAR range compute. SBC-and-swap pattern from
+; visual_extend.char_arm — except the bump is +1 INCLUSIVE
+; (vi convention: visual selection is inclusive at both
+; endpoints; NORMAL-mode `dw` is exclusive of motion landing).
+; The pending_motion_inclusive flag (motion_dollar; Story 2.11)
+; is NOT read — visual selections are unconditionally inclusive.
+;
+; In:      visual_anchor, cursor_offset.
+; Out:     HL = range_start = min(anchor, cursor);
+;          BC = total_bytes = |cursor - anchor| + 1;
+;          A  = KIND_CHAR; JP _visual_op_delete_yank_or_change.
+; ----------------------------------------------------------------
+_visual_op_char_arm:
+    LD      HL, (cursor_offset)
+    LD      DE, (visual_anchor)
+    OR      A
+    SBC     HL, DE                          ; HL = cursor - anchor (signed)
+    JR      NC, .forward
+    ;; Backward branch (cursor < anchor): range_start = cursor;
+    ;; total_bytes = anchor - cursor + 1 (inclusive bump).
+    LD      HL, (visual_anchor)
+    LD      DE, (cursor_offset)
+    OR      A
+    SBC     HL, DE                          ; HL = anchor - cursor (positive)
+    INC     HL                              ; +1 inclusive bump
+    LD      B, H
+    LD      C, L                            ; BC = total_bytes
+    LD      HL, (cursor_offset)             ; HL = range_start = cursor (min)
+    JR      .have_range
+.forward:
+    ;; Forward / equal (cursor >= anchor): HL holds positive delta.
+    INC     HL                              ; HL = total_bytes
+    LD      B, H
+    LD      C, L                            ; BC = total_bytes
+    LD      HL, (visual_anchor)             ; HL = range_start = anchor (min)
+.have_range:
+    LD      A, KIND_CHAR
+    JP      _visual_op_delete_yank_or_change
+
+
+; ----------------------------------------------------------------
+; _visual_op_line_arm
+; VIS_LINE range compute. visual_anchor is a line-start (Story 3.4
+; AC2 invariant); the cursor is anywhere in its line. Project the
+; cursor to its line-start, take min/max of the two line-starts,
+; walk to the bottom line's end via motion_find_line_end, then
+; produce a half-open [range_start, range_end) where range_end
+; consumes the trailing LF. At-EOF carve-out (bottom line has no
+; trailing LF) mirrors edits_line_range_for_count.at_eof in
+; src/edits.asm — when range_start > 0 the leading LF of the line
+; ABOVE is consumed (so the file's new last line doesn't gain a
+; stray trailing LF); when range_start == 0 the whole buffer is
+; the range. Per Q4 Option A — inline rather than factoring a
+; visual_op_line_range helper (single caller; Stories 3.7/3.8 will
+; re-evaluate if they also need a from-anchor-to-cursor line range).
+; ----------------------------------------------------------------
+_visual_op_line_arm:
+    LD      HL, (cursor_offset)
+    CALL    motion_find_line_start          ; HL = cursor_ls
+    PUSH    HL                              ; [cursor_ls]
+    LD      DE, (visual_anchor)             ; DE = anchor (line-start by AC2)
+    OR      A
+    SBC     HL, DE                          ; HL = cursor_ls - anchor (signed)
+    POP     HL                              ; HL = cursor_ls; flags preserved
+    JR      C, .backward
+    ;; Forward / equal: range_start = anchor; walker = cursor_ls (in HL)
+    LD      DE, (visual_anchor)
+    LD      (visual_op_range_start), DE
+    JR      .walk_end
+.backward:
+    ;; Backward: range_start = cursor_ls (HL); walker = anchor
+    LD      (visual_op_range_start), HL
+    LD      HL, (visual_anchor)
+.walk_end:
+    ;; HL = walker (the MAX line-start; walk forward to its line's end)
+    CALL    motion_find_line_end            ; HL = LF pos OR file_length; CF=1 on no-LF
+    JR      C, .at_eof
+    ;; Normal: LF found at HL. range_end = HL + 1 (consume the LF).
+    INC     HL
+    LD      DE, (visual_op_range_start)
+    OR      A
+    SBC     HL, DE                          ; HL = range_end - range_start = total_bytes
+    LD      B, H
+    LD      C, L                            ; BC = total_bytes
+    LD      HL, (visual_op_range_start)
+    LD      A, KIND_LINE
+    JP      _visual_op_delete_yank_or_change
+.at_eof:
+    ;; HL = file_length; bottom line has no trailing LF.
+    ;; If range_start == 0: total = file_length; range_start unchanged.
+    ;; Else: shift range_start back by 1 (consume leading LF of the
+    ;; line above); total = file_length - (range_start - 1).
+    EX      DE, HL                          ; DE = file_length
+    LD      HL, (visual_op_range_start)
+    LD      A, H
+    OR      L
+    JR      Z, .eof_zero
+    DEC     HL                              ; HL = range_start - 1 = delete_start
+    LD      (visual_op_range_start), HL
+    EX      DE, HL                          ; HL = file_length; DE = delete_start
+    OR      A
+    SBC     HL, DE                          ; HL = total_bytes
+    LD      B, H
+    LD      C, L
+    LD      HL, (visual_op_range_start)
+    LD      A, KIND_LINE
+    JP      _visual_op_delete_yank_or_change
+.eof_zero:
+    ;; range_start == 0: delete the entire buffer
+    LD      B, D
+    LD      C, E                            ; BC = file_length
+    ;; HL already 0 (= range_start)
+    LD      A, KIND_LINE
+    JP      _visual_op_delete_yank_or_change
+
+
+; ----------------------------------------------------------------
+; _visual_op_block_arm  (AC5 + AC9 — the heavyweight path)
+; VIS_BLOCK per-row processing. Two passes:
+;   Pass 1: walk rows top-to-bottom (PRE-delete), sum
+;           bytes_this_row per row (BH3-clipped at EOL) + LF
+;           separator bytes between adjacent rows; capacity-check
+;           against YANK_BUFFER_SIZE (sets visual_op_block_yank_ok).
+;   Pass 2: walk rows top-to-bottom with shift-tracking; for each
+;           row append bytes_this_row content to yank_buffer
+;           (if yank_ok) joined by LF separators; for 'd'/'c'
+;           edits_range_delete the clipped slice; cursor lands
+;           at top-left.
+; Undo: for 'd'/'c' a single UNDO_KIND_TOO_LARGE header is written
+; directly (multi-region undo deferred per Q2 Option A; `u` post-op
+; surfaces msg_undo_too_large). For 'y' no undo entry — yank-only.
+;
+; The bounding rectangle is virtual (BH3): short lines contribute
+; whatever bytes their EOL allows (0 if the line is past col_min;
+; clipped to (line_length - col_min) if col_min < line_length <
+; col_max+1; full rect width (col_max - col_min + 1) otherwise).
+; The KIND_BLOCK yank format (AC9) is rows joined by LF separators
+; with no trailing LF; empty rows still emit a separator LF.
+; ----------------------------------------------------------------
+_visual_op_block_arm:
+    ;; Project rectangle via Story-3.5 helper (also fills the 5
+    ;; visual_block_* projection cells we read for col / line-start data).
+    CALL    visual_count_block_dims         ; HL = rows; BC = cols
+    LD      (visual_op_block_rows), HL
+    LD      (visual_op_block_cols), BC
+
+    ;; Compute col_min = min(anchor_col, cursor_col); col_max = max(...)
+    LD      HL, (visual_block_anchor_col)
+    LD      DE, (visual_block_cursor_col)
+    OR      A
+    SBC     HL, DE                          ; HL = anchor_col - cursor_col (signed)
+    JR      C, .acol_lt
+    ;; anchor_col >= cursor_col
+    LD      HL, (visual_block_cursor_col)
+    LD      (visual_op_block_col_min), HL
+    LD      HL, (visual_block_anchor_col)
+    LD      (visual_op_block_col_max), HL
+    JR      .have_cols
+.acol_lt:
+    ;; anchor_col < cursor_col
+    LD      HL, (visual_block_anchor_col)
+    LD      (visual_op_block_col_min), HL
+    LD      HL, (visual_block_cursor_col)
+    LD      (visual_op_block_col_max), HL
+.have_cols:
+
+    ;; Compute top_ls = min(anchor_ls, cursor_ls)
+    LD      HL, (visual_block_anchor_ls)
+    LD      DE, (visual_block_cursor_ls)
+    OR      A
+    SBC     HL, DE                          ; HL = anchor_ls - cursor_ls (signed)
+    JR      C, .anchor_above
+    ;; anchor_ls >= cursor_ls: top_ls = cursor_ls
+    LD      HL, (visual_block_cursor_ls)
+    JR      .have_top
+.anchor_above:
+    LD      HL, (visual_block_anchor_ls)
+.have_top:
+    LD      (visual_op_block_top_ls), HL
+
+    ;; --- Pass 1: sum yank bytes (with LF separators) ---
+    LD      HL, 0
+    LD      (visual_op_block_total_bytes), HL
+    LD      HL, (visual_op_block_top_ls)
+    LD      (visual_op_block_walker), HL
+    LD      HL, (visual_op_block_rows)
+    LD      (visual_op_block_remaining_rows), HL
+.p1_loop:
+    LD      HL, (visual_op_block_walker)
+    CALL    motion_find_line_end            ; HL = old_line_end (LF pos or file_length)
+    PUSH    HL                              ; [old_line_end]
+    LD      DE, (visual_op_block_walker)
+    OR      A
+    SBC     HL, DE                          ; HL = line_length
+    CALL    _visual_op_block_row_bytes      ; HL = bytes_this_row (BH3 clipped)
+    LD      DE, (visual_op_block_total_bytes)
+    ADD     HL, DE
+    LD      (visual_op_block_total_bytes), HL
+    LD      HL, (visual_op_block_remaining_rows)
+    DEC     HL
+    LD      (visual_op_block_remaining_rows), HL
+    LD      A, H
+    OR      L
+    JR      Z, .p1_last
+    ;; Not last row: add LF separator + advance walker (no shift in pass 1)
+    LD      HL, (visual_op_block_total_bytes)
+    INC     HL
+    LD      (visual_op_block_total_bytes), HL
+    POP     HL                              ; HL = old_line_end
+    INC     HL                              ; walker = old_line_end + 1
+    LD      (visual_op_block_walker), HL
+    JR      .p1_loop
+.p1_last:
+    POP     HL                              ; discard saved old_line_end
+
+    ;; --- Capacity check: total_bytes <= YANK_BUFFER_SIZE? ---
+    LD      HL, YANK_BUFFER_SIZE
+    LD      DE, (visual_op_block_total_bytes)
+    OR      A
+    SBC     HL, DE                          ; CF=1 iff total > capacity
+    LD      A, 1
+    JR      NC, .cap_ok
+    XOR     A
+.cap_ok:
+    LD      (visual_op_block_yank_ok), A
+
+    ;; --- For 'd' / 'c': record UNDO_KIND_TOO_LARGE direct
+    ;; (multi-region undo deferred per Q2 Option A; Story 2.13
+    ;; "every mutating op records SOMETHING" invariant preserved).
+    LD      A, (visual_op_pending)
+    CP      'y'
+    JR      Z, .after_undo
+    CALL    undo_clear
+    LD      HL, (visual_op_block_top_ls)
+    LD      BC, 0                           ; length semantically meaningless for TOO_LARGE
+    LD      A, UNDO_KIND_TOO_LARGE
+    CALL    undo_write_header
+.after_undo:
+
+    ;; --- Pass 2: per-row delete + optional yank-append (with shift-tracking) ---
+    LD      HL, (visual_op_block_top_ls)
+    LD      (visual_op_block_walker), HL
+    LD      HL, (visual_op_block_rows)
+    LD      (visual_op_block_remaining_rows), HL
+    LD      HL, yank_buffer
+    LD      (visual_op_block_yank_ptr), HL
+.p2_loop:
+    LD      HL, (visual_op_block_walker)
+    CALL    motion_find_line_end            ; HL = old_line_end
+    PUSH    HL                              ; [old_line_end] — for walker advance + last-row discard
+    LD      DE, (visual_op_block_walker)
+    OR      A
+    SBC     HL, DE                          ; HL = line_length
+    CALL    _visual_op_block_row_bytes      ; HL = bytes_this_row
+    LD      (visual_op_range_bytes), HL     ; stash for walker advance + downstream ops
+    LD      A, H
+    OR      L
+    JR      Z, .p2_after_op                 ; zero row → skip yank-append + delete
+
+    ;; Compute delete_start = walker + col_min; stash for downstream ops
+    LD      HL, (visual_op_block_col_min)
+    LD      DE, (visual_op_block_walker)
+    ADD     HL, DE
+    LD      (visual_op_range_start), HL
+
+    ;; If yank_ok: append bytes_this_row content bytes to yank_buffer
+    LD      A, (visual_op_block_yank_ok)
+    OR      A
+    JR      Z, .p2_skip_append
+    LD      BC, (visual_op_range_bytes)     ; BC = bytes_this_row
+    LD      HL, (visual_op_range_start)     ; HL = source logical offset
+    LD      DE, (visual_op_block_yank_ptr)  ; DE = yank-buffer write ptr
+.p2_append_loop:
+    PUSH    DE                              ; motion_byte_at_logical trashes DE
+    CALL    motion_byte_at_logical          ; A = byte; HL preserved; BC preserved
+    POP     DE
+    LD      (DE), A
+    INC     HL
+    INC     DE
+    DEC     BC
+    LD      A, B
+    OR      C
+    JR      NZ, .p2_append_loop
+    LD      (visual_op_block_yank_ptr), DE
+.p2_skip_append:
+
+    ;; For 'd' / 'c': delete bytes_this_row from delete_start
+    LD      A, (visual_op_pending)
+    CP      'y'
+    JR      Z, .p2_after_op
+    LD      HL, (visual_op_range_start)
+    LD      BC, (visual_op_range_bytes)
+    CALL    edits_range_delete              ; cursor := delete_start; bytes removed
+
+.p2_after_op:
+    ;; Decrement remaining_rows; branch on whether this was the last
+    LD      HL, (visual_op_block_remaining_rows)
+    DEC     HL
+    LD      (visual_op_block_remaining_rows), HL
+    LD      A, H
+    OR      L
+    JR      Z, .p2_last
+
+    ;; Not last row: optional LF separator (empty rows STILL get LF sep per AC9)
+    LD      A, (visual_op_block_yank_ok)
+    OR      A
+    JR      Z, .p2_skip_lf
+    LD      HL, (visual_op_block_yank_ptr)
+    LD      A, 0x0A
+    LD      (HL), A
+    INC     HL
+    LD      (visual_op_block_yank_ptr), HL
+.p2_skip_lf:
+
+    ;; Advance walker.
+    ;;   For 'd' / 'c': walker = old_line_end - bytes_this_row + 1 (shift-aware).
+    ;;   For 'y':       walker = old_line_end + 1 (no shift).
+    POP     HL                              ; HL = old_line_end (PUSHed at loop top)
+    LD      A, (visual_op_pending)
+    CP      'y'
+    JR      Z, .p2_advance_y
+    LD      DE, (visual_op_range_bytes)
+    OR      A
+    SBC     HL, DE                          ; HL = old_line_end - bytes_this_row
+.p2_advance_y:
+    INC     HL                              ; walker = (...) + 1 (past the LF)
+    LD      (visual_op_block_walker), HL
+    JP      .p2_loop
+
+.p2_last:
+    POP     HL                              ; discard saved old_line_end
+
+    ;; --- Finalise yank register ---
+    LD      A, (visual_op_block_yank_ok)
+    OR      A
+    JR      Z, .yank_refused
+    LD      A, KIND_BLOCK
+    LD      (yank_kind), A
+    LD      HL, (visual_op_block_total_bytes)
+    LD      (yank_length), HL
+    JR      .set_cursor
+.yank_refused:
+    ;; SR6: yank register preserved on over-capacity; surface status.
+    LD      HL, msg_yank_too_large
+    XOR     A
+    CALL    status_set_message
+
+.set_cursor:
+    ;; Cursor placement: top-left of bounding rectangle (vi-faithful
+    ;; for d/c; for y we restore to top-left even though no delete
+    ;; happened — the user may have moved cursor during the visual
+    ;; session and vim's `vbY p`-then-`p` cursor lands at top-left).
+    LD      HL, (visual_op_block_top_ls)
+    LD      DE, (visual_op_block_col_min)
+    ADD     HL, DE
+    LD      (cursor_offset), HL
+
+    ;; BH3 jagged-top clamp: when the top row of the bounding rectangle
+    ;; is SHORTER than col_min (jagged left edge on the top row), the
+    ;; raw top_ls+col_min offset lands past that row's LF (or past EOF
+    ;; if the top row is also the no-trailing-LF last line). Mirror
+    ;; KIND_CHAR's x-style clamp: DEC if past EOF or on a LF. Applies
+    ;; to all three operators (y/d/c) — for d/c the offset post-delete
+    ;; can still land on the trailing LF of a now-empty top row.
+    LD      A, H
+    OR      L
+    JR      Z, .b_have_cursor               ; cursor == 0: no clamp possible
+    CALL    motion_byte_at_logical          ; HL preserved
+    JR      C, .b_cursor_clamp              ; past EOF → clamp back
+    CP      0x0A
+    JR      NZ, .b_have_cursor              ; real byte → leave
+.b_cursor_clamp:
+    DEC     HL
+    LD      (cursor_offset), HL
+.b_have_cursor:
+
+    ;; Dispatch on operator
+    LD      A, (visual_op_pending)
+    CP      'c'
+    JR      Z, .b_dispatch_c
+    ;; 'y' or 'd': for 'y' no redraw needed (buffer unchanged);
+    ;; for 'd' commit dirty+redraw first.
+    CP      'y'
+    JR      Z, .b_dispatch_dy
+    CALL    edits_dirty_and_redraw          ; 'd' — buffer mutated
+.b_dispatch_dy:
+    ;; Branch on yank-refusal flag to preserve msg_yank_too_large
+    ;; if it was surfaced; otherwise emit the empty mode banner.
+    LD      A, (visual_op_block_yank_ok)
+    OR      A
+    JP      NZ, enter_normal_mode           ; success — clean mode change
+    ;; Refusal: preserve msg_yank_too_large surface; do mode-write inline.
+    LD      A, MODE_NORMAL
+    LD      (mode_byte), A
+    JP      parser_clear
+.b_dispatch_c:
+    CALL    edits_dirty_and_redraw          ; 'c' — buffer mutated
+    JP      enter_insert_mode               ; AC7: insert banner overwrites status (transient flash)
+
+
+; ----------------------------------------------------------------
+; _visual_op_block_row_bytes  (BH3 clip helper)
+; Compute bytes_this_row for the current rectangle row.
+;   bytes = max(0, min(col_max + 1, line_length) - col_min)
+; In:      HL = line_length (>= 0).
+; Out:     HL = bytes_this_row (0 .. col_max - col_min + 1).
+; Reads:   (visual_op_block_col_min), (visual_op_block_col_max).
+; Trashes: A, BC, DE, HL, F.
+; ----------------------------------------------------------------
+_visual_op_block_row_bytes:
+    LD      DE, (visual_op_block_col_max)
+    INC     DE                              ; DE = col_max + 1
+    PUSH    HL                              ; [line_length]
+    OR      A
+    SBC     HL, DE                          ; HL = line_length - (col_max + 1); CF=1 if line_length < col_max+1
+    POP     HL                              ; HL = line_length; flags preserved
+    JR      C, .have_end                    ; line_length < col_max + 1 → end = line_length
+    LD      H, D
+    LD      L, E                            ; end = col_max + 1 = DE
+.have_end:
+    LD      DE, (visual_op_block_col_min)
+    OR      A
+    SBC     HL, DE                          ; HL = end - col_min; CF=1 if end < col_min
+    RET     NC                              ; HL = bytes_this_row (>= 0)
+    LD      HL, 0                           ; end < col_min → bytes_this_row = 0
+    RET
+
+
+; ----------------------------------------------------------------
+; _visual_op_delete_yank_or_change  (AC6 — CHAR / LINE shared finalisation)
+; Branches on visual_op_pending to one of three paths:
+;   'd' — undo_record_delete + yank-copy (with refusal) + edits_range_delete
+;         + cursor placement (CHAR x-style clamp; LINE op_dd three-way) +
+;         edits_dirty_and_redraw + JP enter_normal_mode.
+;   'c' — same as 'd' through delete; tail-JP enter_insert_mode instead.
+;         Story 2.13's undo_insert_exit_record fires at INSERT-exit and
+;         upgrades the DELETE entry to REPLACE (phase 2 — inherited).
+;   'y' — yank-only (no undo, no delete); cursor restored to range_start
+;         (Q1 Option A — matches vim's visual-yank behaviour); JP
+;         enter_normal_mode.
+;
+; In:      HL = range_start; BC = total_bytes; A = KIND_CHAR | KIND_LINE.
+;          (visual_op_pending) = operator byte.
+; Out:     mode_byte updated via the terminal tail-JP; cursor_offset
+;          placed per submode + operator semantics; yank register
+;          updated (or PRESERVED on over-capacity refusal); undo
+;          recorded for d / c; status surfaces msg_yank_too_large
+;          on refusal.
+; ----------------------------------------------------------------
+_visual_op_delete_yank_or_change:
+    ;; 0-byte defensive guard. Stash kind across the A=B|C test.
+    LD      D, A
+    LD      A, B
+    OR      C
+    JP      Z, enter_normal_mode            ; silent no-op (mode + parser cleared)
+    LD      A, D
+    LD      (visual_op_range_start), HL
+    LD      (visual_op_range_bytes), BC
+    LD      (visual_op_yank_kind), A
+    ;; Init yank-refusal flag (1 = ok; cleared on over-capacity).
+    ;; Reused from BLOCK arm — module-local cell shared because the
+    ;; CHAR/LINE shared finalisation never executes the BLOCK arm
+    ;; concurrently (visual_apply_operator picks one arm per call).
+    ;; The flag persists past the operator-tail dispatch to decide
+    ;; whether enter_normal_mode (which would clobber status_buffer
+    ;; via msg_mode_normal) is safe to call, or whether we have to
+    ;; do a manual MODE_NORMAL write + parser_clear tail to preserve
+    ;; the msg_yank_too_large surface.
+    LD      A, 1
+    LD      (visual_op_block_yank_ok), A
+
+    LD      A, (visual_op_pending)
+    CP      'y'
+    JR      Z, .yank_only
+
+    ;; 'd' or 'c': undo + yank + delete + cursor + dispatch.
+    ;; undo_record_delete handles its own capacity check (TOO_LARGE
+    ;; for payloads > UNDO_PAYLOAD_SIZE); the gap-buffer bytes are
+    ;; still at pre-delete logical positions here.
+    CALL    undo_record_delete
+
+    LD      HL, (visual_op_range_start)
+    LD      BC, (visual_op_range_bytes)
+    LD      A, (visual_op_yank_kind)
+    CALL    edits_copy_to_yank              ; CF=1 on over-capacity
+    JR      NC, .yank_ok
+    ;; Refused: surface status; clear refusal flag so the tail
+    ;; avoids enter_normal_mode's status_buffer clobber. Deletion
+    ;; STILL proceeds (SR6 "predictable failure mode").
+    XOR     A
+    LD      (visual_op_block_yank_ok), A
+    LD      HL, msg_yank_too_large
+    XOR     A
+    CALL    status_set_message
+.yank_ok:
+    LD      HL, (visual_op_range_start)
+    LD      BC, (visual_op_range_bytes)
+    CALL    edits_range_delete              ; cursor := range_start; bytes removed
+
+    ;; Post-delete cursor placement — branch on KIND.
+    LD      A, (visual_op_yank_kind)
+    CP      KIND_LINE
+    JR      Z, .post_line_cursor
+    ;; KIND_CHAR: op_compose_d's x-style EOL/EOF clamp (DEC cursor
+    ;; if past EOF or on LF).
+    LD      HL, (cursor_offset)
+    LD      A, H
+    OR      L
+    JR      Z, .commit                      ; cursor == 0 — no clamp possible
+    CALL    motion_byte_at_logical          ; HL preserved
+    JR      C, .char_clamp                  ; past EOF → clamp
+    CP      0x0A
+    JR      NZ, .commit                     ; on a real byte → leave
+.char_clamp:
+    DEC     HL
+    LD      (cursor_offset), HL
+    JR      .commit
+.post_line_cursor:
+    ;; KIND_LINE: op_dd three-way placement.
+    LD      HL, (cursor_offset)             ; cursor at range_start (post-delete)
+    CALL    motion_byte_at_logical          ; HL preserved
+    JR      NC, .commit                     ; cursor < new file_length → done
+    LD      A, H
+    OR      L
+    JR      Z, .commit                      ; cursor == 0 → empty buffer / BOF
+    ;; Case 3: cursor = motion_find_line_start(cursor - 1)
+    DEC     HL
+    CALL    motion_find_line_start
+    LD      (cursor_offset), HL
+
+.commit:
+    CALL    edits_dirty_and_redraw
+    LD      A, (visual_op_pending)
+    CP      'c'
+    JP      Z, enter_insert_mode            ; 'c': INSERT banner is per-spec (AC7 transient flash)
+    ;; 'd': branch on refusal flag.
+    LD      A, (visual_op_block_yank_ok)
+    OR      A
+    JP      NZ, enter_normal_mode           ; success — emit empty mode banner
+    ;; Refusal: preserve msg_yank_too_large; do mode change inline.
+    LD      A, MODE_NORMAL
+    LD      (mode_byte), A
+    JP      parser_clear
+
+.yank_only:
+    ;; 'y': pure read; no buffer mutation; no undo entry.
+    LD      HL, (visual_op_range_start)
+    LD      BC, (visual_op_range_bytes)
+    LD      A, (visual_op_yank_kind)
+    CALL    edits_copy_to_yank
+    JR      NC, .yank_only_ok
+    ;; Refused: surface status; flag refusal for tail dispatch.
+    XOR     A
+    LD      (visual_op_block_yank_ok), A
+    LD      HL, msg_yank_too_large
+    XOR     A
+    CALL    status_set_message
+.yank_only_ok:
+    ;; Cursor at range_start (Q1 Option A — matches vim's `vwy` semantic).
+    LD      HL, (visual_op_range_start)
+    LD      (cursor_offset), HL
+    LD      A, (visual_op_block_yank_ok)
+    OR      A
+    JP      NZ, enter_normal_mode           ; success
+    ;; Refusal: preserve msg_yank_too_large.
+    LD      A, MODE_NORMAL
+    LD      (mode_byte), A
+    JP      parser_clear
 
 
 ;; ============================================================
@@ -711,12 +1447,52 @@ MSG_MODE_VISUAL_BLOCK_PREFIX_LEN EQU 19
 ; status_dec_dest pattern in src/statusln.asm (module-local DEFW
 ; scratch for inter-helper marshalling).
 ;
-; NOTE: visual_apply_operator (Stories 3.6+) is declared in the
-; Public block above as a forward reference for future dispatchers;
-; no body lands yet. Adding an empty EQU stub would shadow the
-; future symbol and break sjasmplus's two-pass resolution.
+; NOTE: visual_apply_operator (Story 3.6) lands above. Its body uses
+; its own module-local scratch group (visual_op_* cells below) — the
+; Story 3.5 visual_block_* group declared here is reused ONLY by
+; visual_count_block_dims and remains valid for the duration of THAT
+; helper's call (the BLOCK arm of visual_apply_operator calls
+; visual_count_block_dims as its first step, then COPIES the
+; projection cells it needs into the visual_op_block_* group before
+; doing any further work).
 visual_block_anchor_ls:   DEFW 0
 visual_block_anchor_col:  DEFW 0
 visual_block_cursor_ls:   DEFW 0
 visual_block_cursor_col:  DEFW 0
 visual_block_temp_rows:   DEFW 0
+
+
+;; ============================================================
+;; --- Module-local data (Story 3.6 — visual_apply_operator scratch) ---
+;; ============================================================
+; Twelve cells (10 DEFW + 2 DEFB) for the operator dispatch +
+; CHAR / LINE shared finalisation + BLOCK arm pass-1 / pass-2 loop
+; state. Cleared and re-written by visual_apply_operator at every
+; call; values valid ONLY between the helper's entry and its
+; terminal tail-JP (enter_normal_mode for d/y; enter_insert_mode
+; for c). Module-local; never exported via inc/state.inc.
+;
+; The visual_block_* group above (Story 3.5) and the visual_op_*
+; group below are INDEPENDENT scratch groups (not a superset
+; relationship). visual_block_* is owned by visual_count_block_dims;
+; visual_op_block_* is owned by _visual_op_block_arm's pass-1 +
+; pass-2 loops; they overlap conceptually (both relate to BLOCK
+; projection) but their lifecycles are disjoint.
+
+;; --- CHAR / LINE / BLOCK shared ---
+visual_op_pending:        DEFB 0  ; operator byte ('c' | 'd' | 'y') stashed across CALL chain
+visual_op_range_start:    DEFW 0  ; HL stash across the shared-finalisation sub-CALLs
+visual_op_range_bytes:    DEFW 0  ; BC stash, same purpose
+visual_op_yank_kind:      DEFB 0  ; KIND_CHAR / KIND_LINE from the CHAR / LINE arms
+
+;; --- BLOCK arm scratch (pass-1 + pass-2 + capacity + finalise) ---
+visual_op_block_rows:        DEFW 0  ; rows count cached from visual_count_block_dims HL return
+visual_op_block_cols:        DEFW 0  ; cols count cached from BC return (debug; not read downstream)
+visual_op_block_col_min:     DEFW 0  ; min(anchor_col, cursor_col)
+visual_op_block_col_max:     DEFW 0  ; max(anchor_col, cursor_col)
+visual_op_block_top_ls:      DEFW 0  ; min(anchor_ls, cursor_ls) — line-start of top row
+visual_op_block_walker:      DEFW 0  ; per-row line-start walker (pass 1 + pass 2)
+visual_op_block_total_bytes: DEFW 0  ; pass-1 yank-byte accumulator; pass-2 yank_length seed
+visual_op_block_remaining_rows: DEFW 0  ; loop counter for both passes
+visual_op_block_yank_ptr:    DEFW 0  ; pass-2 yank_buffer write pointer
+visual_op_block_yank_ok:     DEFB 0  ; 0 = yank refused (over capacity); 1 = yank ok
