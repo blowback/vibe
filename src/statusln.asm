@@ -53,7 +53,10 @@
 ;     search_pattern at cold-start),
 ;     msg_mode_visual_prefix (Story 3.3 — "-- visual -- " with
 ;     trailing space; the bare msg_mode_visual at this slot was
-;     retired when src/dispatch.asm's enter_visual_mode stub left)
+;     retired when src/dispatch.asm's enter_visual_mode stub left),
+;     msg_mode_visual_line_prefix (Story 3.4 — "-- visual line -- "
+;     with trailing space; LINE submode banner read by
+;     src/visual.asm's visual_compose_status_line entry)
 ;
 ; State owned (read/write):
 ;   status_buffer        ; 80-byte row buffer; writer = this module only (AR12)
@@ -337,6 +340,14 @@ msg_mode_insert:        DEFB "-- insert --", 0
 ; "-- visual -- <count>" dynamically via visual_compose_status
 ; using this prefix (13 ASCII chars + trailing space + NUL).
 msg_mode_visual_prefix: DEFB "-- visual -- ", 0
+; Story 3.4 — VIS_LINE submode prefix. 18 ASCII chars + NUL = 19 B.
+; visual_compose_status_line LDIRs the first 18 bytes (without the
+; NUL) into status_compose_scratch; the digits follow at offset 18;
+; then visual_compose_status_line writes its own NUL terminator and
+; hands off to status_set_message. Parallels msg_mode_visual_prefix
+; one line above — same family, explicit unit. Read by the new
+; visual_compose_status_line entry in src/visual.asm.
+msg_mode_visual_line_prefix: DEFB "-- visual line -- ", 0
 msg_unbound_key:        DEFB "unbound key", 0
 
 ;; --- Story 2.2: bdos_error_funnel override pointer ---

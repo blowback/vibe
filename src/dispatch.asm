@@ -163,7 +163,13 @@
 ;                     visual_extend (the per-motion status refresh)
 ;                     is called from src/edits.asm's
 ;                     edits_compose_or_clear MODE_VISUAL arm — that
-;                     forward reference is independent of dispatch.asm.)
+;                     forward reference is independent of dispatch.asm.
+;                     Story 3.4 — visual_enter_line lands as the new
+;                     dispatch_normal['V'] entry (FR34; line-wise
+;                     visual selection; slot count grows 28 → 29;
+;                     slot between 'O' and 'a'). 'V' deliberately
+;                     NOT bound in dispatch_visual — v↔V submode-
+;                     toggle deferred to polish per Q1 Option A.)
 ; ============================================================
 
 ;; ============================================================
@@ -542,7 +548,10 @@ dispatch_normal:
     ASSERT  'O' > 'G'
     DEFB    'O'                         ; 'O'     — open line above (FR27, Story 2.8)
     DEFW    edits_open_above
-    ASSERT  'a' > 'O'
+    ASSERT  'V' > 'O'
+    DEFB    'V'                         ; 'V'     — enter visual line mode (FR34, Story 3.4)
+    DEFW    visual_enter_line           ; forward ref into src/visual.asm
+    ASSERT  'a' > 'V'
     DEFB    'a'                         ; 'a'     — append after cursor (FR25, Story 2.8)
     DEFW    edits_enter_insert_after
     ASSERT  'b' > 'a'
