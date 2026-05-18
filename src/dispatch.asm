@@ -138,7 +138,14 @@
 ;                     entry now points directly at search_begin in
 ;                     src/search.asm. Forward-referenced via
 ;                     sjasmplus two-pass since search.asm INCLUDEs
-;                     after dispatch.asm in vibe.asm's AR25 chain.)
+;                     after dispatch.asm in vibe.asm's AR25 chain.
+;                     Story 3.2 — search_next added as the new
+;                     dispatch_normal['n'] entry (FR42; repeats the
+;                     last search; slot count grows 35 → 36; entry
+;                     slots between 'l' and 'o'). search_run was
+;                     refactored to RET-based so it can be shared
+;                     between search_commit (COMMAND mode caller)
+;                     and search_next (NORMAL mode caller).)
 ; ============================================================
 
 ;; ============================================================
@@ -559,7 +566,10 @@ dispatch_normal:
     ASSERT  'l' > 'k'
     DEFB    'l'                         ; 'l'     — cursor right (FR18, Story 2.5)
     DEFW    motion_l
-    ASSERT  'o' > 'l'
+    ASSERT  'n' > 'l'
+    DEFB    'n'                         ; 'n'     — repeat last search (FR42, Story 3.2)
+    DEFW    search_next
+    ASSERT  'o' > 'n'
     DEFB    'o'                         ; 'o'     — open line below (FR26, Story 2.8)
     DEFW    edits_open_below
     ASSERT  'p' > 'o'

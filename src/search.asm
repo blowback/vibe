@@ -46,6 +46,25 @@
 ;                             ; msg_no_previous_pattern when both
 ;                             ; buffers are empty; otherwise runs
 ;                             ; the two-pass walk via search_run.
+;   search_next               ; entry from dispatch_normal['n']
+;                             ; (Story 3.2). Repeats the most recent
+;                             ; forward search using the persistent
+;                             ; search_pattern slot. Pure reader of
+;                             ; search_pattern (no commit; never
+;                             ; writes the slot — the AC4-style
+;                             ; "/notfound<Enter> commits anyway"
+;                             ; semantics of Story 3.1's Q5 pin do
+;                             ; NOT apply to `n`: there is no
+;                             ; ex_buffer source to LDIR from). On
+;                             ; non-empty pattern CALLs search_run
+;                             ; (the shared two-pass orchestrator)
+;                             ; and tail-JPs parser_clear. On empty
+;                             ; pattern surfaces msg_no_previous_
+;                             ; pattern (no walk, cursor unchanged)
+;                             ; and tail-JPs parser_clear. Mode
+;                             ; UNCHANGED at MODE_NORMAL across the
+;                             ; whole entry — n is a NORMAL → NORMAL
+;                             ; handler.
 ;   search_forward_from       ; PUBLIC helper. Walks logical bytes
 ;                             ; comparing pattern[0..plen) byte-
 ;                             ; for-byte; returns the first match
@@ -53,7 +72,9 @@
 ;                             ; Caller stages start_offset in HL
 ;                             ; and the (exclusive) upper bound in
 ;                             ; (search_upper_bound). Story 3.2's
-;                             ; `n` reuses this directly.
+;                             ; `n` reuses this transitively via
+;                             ; search_run; Story 3.1's `/` commit
+;                             ; path also reuses it via search_run.
 ;
 ; State owned (read/write):
 ;   search_pattern            ; length-prefixed (1B length + 64B
@@ -164,6 +185,15 @@
 ;                          forward-reference is irrelevant here, but
 ;                          the symbol IS visible to sjasmplus's flat
 ;                          namespace.)
+;   src/parser.asm        (parser_clear — Story 3.2 tail-JP target
+;                          from every search_next exit. AC13 protocol
+;                          from Story 2.5: every dispatch_normal
+;                          handler tail-JPs parser_clear so stale
+;                          count / operator / motion-prefix is
+;                          dropped before control returns to
+;                          input_loop. parser.asm INCLUDEs before
+;                          search.asm in the AR25 chain so the
+;                          symbol is a backward reference.)
 ;   src/statusln.asm      (status_set_message;
 ;                          msg_no_previous_pattern (new this story),
 ;                          msg_pattern_not_found, msg_search_wrapped,
@@ -172,9 +202,11 @@
 ;                          first-pass match per AC3))
 ;   src/exline.asm        (exline_compose_status — tail-JP target
 ;                          from search_begin; exline_cancel_core —
-;                          tail-JP target from every search_commit
-;                          terminus and from search_run's match /
-;                          no-match arms)
+;                          tail-JP target from search_commit's
+;                          terminal `.run` arm and the no-prior
+;                          arm of search_commit. Story 3.2 refactor:
+;                          search_run NO LONGER tail-JPs
+;                          exline_cancel_core itself — callers do.)
 ; ============================================================
 
 ;; ============================================================
@@ -262,19 +294,76 @@ search_commit:
     LD      HL, ex_buffer_text
     LD      DE, search_pattern_text
     LDIR
-    JR      search_run                  ; fall through to walk
+    JR      .run                        ; shared walk + COMMAND→NORMAL cleanup
 
 .check_prior:
     ;; --- AC4: bare-Enter; reuse prior search_pattern if any ---
     LD      A, (search_pattern)
     OR      A
-    JR      NZ, search_run              ; have prior pattern; reuse
+    JR      NZ, .run                    ; have prior pattern; reuse
 
     ;; --- No prior pattern; surface msg_no_previous_pattern ---
     LD      HL, msg_no_previous_pattern
     XOR     A
     CALL    status_set_message
     JP      exline_cancel_core
+
+.run:
+    ;; Story 3.2: search_run is now RET-based (shared with search_next);
+    ;; commit path wraps it with the COMMAND → NORMAL cleanup that
+    ;; search_next (NORMAL → NORMAL) does NOT need.
+    CALL    search_run
+    JP      exline_cancel_core
+
+
+;; ============================================================
+;; --- Public entry: search_next ('n' from dispatch_normal) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; search_next
+; Entered from dispatch_normal['n']. Repeats the most recent
+; forward search using the persistent search_pattern slot. Pure
+; reader of search_pattern (no commit; never writes the slot).
+;
+; AC3 — non-empty search_pattern: CALL search_run to run the
+;       two-pass wrap walk (first pass [cursor+1, file_length),
+;       wrap pass [0, original_cursor + 1) per the Q4 pin from
+;       Story 3.1).
+; AC4 — wrap behaviour + status outcomes are inherited verbatim
+;       from search_run.
+; AC5 — empty search_pattern (cold-start search_pattern[0] == 0):
+;       surface msg_no_previous_pattern; no walk; cursor unchanged.
+; AC6 — does NOT consume count_accumulator (single-step n only;
+;       counted-n / Nn deferred to a future polish story). The
+;       tail-JP parser_clear drops any stale count / operator /
+;       motion-prefix from before the n keystroke (AC13 protocol
+;       from Story 2.5; sibling to every other dispatch_normal
+;       handler).
+;
+; In:      A = 'n' (MC4 — ignored; behaviour depends solely on
+;          search_pattern state).
+; Out:     cursor_offset possibly updated (only on match — vi
+;          convention: failed search leaves cursor in place);
+;          status row composed; mode_byte = MODE_NORMAL (unchanged
+;          — n runs from NORMAL, stays in NORMAL); parser state
+;          zeroed by the tail-JP parser_clear.
+; Trashes: A, BC, DE, HL, F.
+; Calls:   search_run (CALL), status_set_message (tail-JP via
+;          the no-prior arm), parser_clear (tail-JP — every exit).
+; ----------------------------------------------------------------
+search_next:
+    LD      A, (search_pattern)
+    OR      A
+    JR      Z, .no_prior
+    CALL    search_run
+    JP      parser_clear                ; tail-JP — drop stale count
+
+.no_prior:
+    LD      HL, msg_no_previous_pattern
+    XOR     A
+    CALL    status_set_message
+    JP      parser_clear                ; tail-JP — same
 
 
 ;; ============================================================
@@ -283,8 +372,11 @@ search_commit:
 
 ; ----------------------------------------------------------------
 ; search_run
-; AC3 + AC4 + AC5 walk orchestration. Called from search_commit
-; after search_pattern is known populated (length > 0).
+; AC3 + AC4 + AC5 walk orchestration. Called by both search_commit
+; (`/`-prompt commit path, COMMAND mode) and search_next (`n` key
+; from NORMAL). Caller is responsible for any mode/ex_buffer
+; cleanup AFTER this routine returns — search_run itself is now
+; mode-agnostic (Story 3.2 Q1 refactor).
 ;
 ; Pass 1: search_forward_from(cursor + 1, file_length).
 ; Pass 2 (wrap, AC5): search_forward_from(0, original_cursor + 1).
@@ -299,17 +391,20 @@ search_commit:
 ;   - Both passes miss: cursor UNCHANGED (vi convention); status =
 ;     msg_pattern_not_found.
 ;
-; Every exit tail-JPs exline_cancel_core, which clears ex_buffer
-; and command_submode and flips mode_byte back to MODE_NORMAL
-; without clobbering the status banner just set.
+; Caller (search_commit) is in MODE_COMMAND and must JP
+; exline_cancel_core after this returns to flip back to MODE_NORMAL
+; and clear ex_buffer + command_submode without clobbering the
+; status banner this routine just set. Caller (search_next) is
+; already in MODE_NORMAL and tail-JPs parser_clear to drop any
+; pending count / operator / motion-prefix.
 ;
 ; In:      (none — reads cursor_offset, search_pattern, gap state)
-; Out:     cursor_offset possibly updated; status row composed;
-;          mode_byte = MODE_NORMAL; ex_buffer cleared;
-;          command_submode = CMD_SUB_EX.
+; Out:     cursor_offset possibly updated; status row composed.
+;          Mode / ex_buffer / command_submode UNCHANGED (caller's
+;          responsibility).
 ; Trashes: A, BC, DE, HL, F.
 ; Calls:   search_compute_file_length, search_forward_from,
-;          status_set_message, exline_cancel_core (tail-JP).
+;          status_set_message.
 ; ----------------------------------------------------------------
 search_run:
     ;; --- Compute start_1 = cursor_offset + 1 ---
@@ -335,8 +430,7 @@ search_run:
     ;; --- Both passes missed; pattern not found, cursor unchanged ---
     LD      HL, msg_pattern_not_found
     XOR     A
-    CALL    status_set_message
-    JP      exline_cancel_core
+    JP      status_set_message          ; tail-JP — RETs after status set
 
 .first_pass_match:
     ;; HL = match_start. Stack still holds the saved start_1; drop it.
@@ -344,8 +438,7 @@ search_run:
     POP     DE                          ; discard saved start_1; ()
     LD      HL, msg_mode_normal         ; clear status (vi convention)
     XOR     A
-    CALL    status_set_message
-    JP      exline_cancel_core
+    JP      status_set_message          ; tail-JP — RETs after status set
 
 .wrap_match:
     ;; HL = match_start. Stack already balanced (start_1 was POPped
@@ -353,8 +446,7 @@ search_run:
     LD      (cursor_offset), HL
     LD      HL, msg_search_wrapped
     XOR     A
-    CALL    status_set_message
-    JP      exline_cancel_core
+    JP      status_set_message          ; tail-JP — RETs after status set
 
 
 ;; ============================================================
