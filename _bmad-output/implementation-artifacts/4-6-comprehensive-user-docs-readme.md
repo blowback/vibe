@@ -1,6 +1,6 @@
 # Story 4.6: Comprehensive user documentation in README.md
 
-Status: ready-for-dev
+Status: done
 
 <!-- Provenance: Ad-hoc scoping by Ant 2026-05-19 to follow up the implementation
      completion of Epics 1-3 + Epic 4 (4.1/4.2) + 4.3/4.4/4.5 in flight. README.md
@@ -292,60 +292,60 @@ it's a new piece of work).
 
 ## Tasks / Subtasks
 
-- [ ] **Task 0 — Tech-writer onboarding + source-of-truth survey**
-  - [ ] 0.1 Read `_bmad-output/planning-artifacts/prd.md` end-to-end with focus on the
+- [x] **Task 0 — Tech-writer onboarding + source-of-truth survey**
+  - [x] 0.1 Read `_bmad-output/planning-artifacts/prd.md` end-to-end with focus on the
     FR list (lines 680-900+). The 53 implemented FRs are the load-bearing content of the
     User Guide.
-  - [ ] 0.2 Read `src/statusln.asm` for every `msg_*:` label — these are the exact
+  - [x] 0.2 Read `src/statusln.asm` for every `msg_*:` label — these are the exact
     strings VIBE displays on the status line. Catalogue them; they go into AC3's status
     interpretation table.
-  - [ ] 0.3 Read `inc/equates.inc` for every `*_MAX` / `*_SIZE` / `*_BUFFER_SIZE`
+  - [x] 0.3 Read `inc/equates.inc` for every `*_MAX` / `*_SIZE` / `*_BUFFER_SIZE`
     constant — these are the numeric limits for AC5. Catalogue them.
-  - [ ] 0.4 Read `_bmad-output/implementation-artifacts/deferred-work-triage-2026-05-19.md`
+  - [x] 0.4 Read `_bmad-output/implementation-artifacts/deferred-work-triage-2026-05-19.md`
     Theme B (lines 211-213) for park-able backlog — those are the FUTURE vi-features
     that go in AC4's deviations section as "not yet" entries.
-  - [ ] 0.5 Read `~/.claude/projects/-home-ant-src-microbeast-vibe/memory/MEMORY.md` for
+  - [x] 0.5 Read `~/.claude/projects/-home-ant-src-microbeast-vibe/memory/MEMORY.md` for
     project-level deviation memory ([[project_no_tilde_marker]] in particular). Each
     project memory entry is potentially a documentation source.
-  - [ ] 0.6 Read the current `README.md` (48 lines) — note what's preserved (per AC7) vs
+  - [x] 0.6 Read the current `README.md` (48 lines) — note what's preserved (per AC7) vs
     what's replaced (per AC1's restructuring).
 
-- [ ] **Task 1 — Draft User Guide skeleton + Quick-start (AC: #1, #6)**
-  - [ ] 1.1 Create the new `README.md` skeleton with the top-level shape from AC1.
-  - [ ] 1.2 Write the one-paragraph user-facing pitch at the top — replaces the current
+- [x] **Task 1 — Draft User Guide skeleton + Quick-start (AC: #1, #6)**
+  - [x] 1.1 Create the new `README.md` skeleton with the top-level shape from AC1.
+  - [x] 1.2 Write the one-paragraph user-facing pitch at the top — replaces the current
     dev-loop disclaimer. Suggested shape: "VIBE is a vi-spirited modal text editor for
     the Feersum MicroBeast (Z80, CP/M 2.2). Single-buffer, single-level-undo, optimized
     for serial-terminal use. Modal editing with motions, edits, visual selection,
     composed operator+motion, ex commands, and forward search. Fits in 10 KB of TPA."
-  - [ ] 1.3 Write the Quick-start walkthrough per AC6. 5 numbered steps, ~10-15 lines.
+  - [x] 1.3 Write the Quick-start walkthrough per AC6. 5 numbered steps, ~10-15 lines.
     Inline keystrokes (no big tables yet).
 
-- [ ] **Task 2 — Modes section (AC: #3)**
-  - [ ] 2.1 Paragraph + sub-paragraph structure: NORMAL (default; motions + edits),
+- [x] **Task 2 — Modes section (AC: #3)**
+  - [x] 2.1 Paragraph + sub-paragraph structure: NORMAL (default; motions + edits),
     INSERT (text entry until Esc), COMMAND (ex-line `:` and search `/`), VISUAL (char /
     line / block selection).
-  - [ ] 2.2 Mode-transitions table — every documented transition. Source FR12-FR17 from
+  - [x] 2.2 Mode-transitions table — every documented transition. Source FR12-FR17 from
     PRD; cross-check against `src/dispatch.asm` for the actual dispatch entry points.
-  - [ ] 2.3 Status-line interpretation per AC3 step 3. Catalogue from Task 0.2 grep of
+  - [x] 2.3 Status-line interpretation per AC3 step 3. Catalogue from Task 0.2 grep of
     `src/statusln.asm`.
 
-- [ ] **Task 3 — Commands section (AC: #2)**
-  - [ ] 3.1 Motions table (h/j/k/l/w/b/0/$/gg/G + counts, per FR18-FR23).
-  - [ ] 3.2 Edits table (i/a/o/O/x/dd/dw/yy/p, per FR24-FR32).
-  - [ ] 3.3 Visual-mode operations table (Ctrl-V/v/V for entry; d/y/c on selection per
+- [x] **Task 3 — Commands section (AC: #2)**
+  - [x] 3.1 Motions table (h/j/k/l/w/b/0/$/gg/G + counts, per FR18-FR23).
+  - [x] 3.2 Edits table (i/a/o/O/x/dd/dw/yy/p, per FR24-FR32).
+  - [x] 3.3 Visual-mode operations table (Ctrl-V/v/V for entry; d/y/c on selection per
     FR36; >/< per FR37; ~ per FR38).
-  - [ ] 3.4 Composed operators table (dw/d$/c5w/y3j/c3l per FR39-FR40 — the operator ×
+  - [x] 3.4 Composed operators table (dw/d$/c5w/y3j/c3l per FR39-FR40 — the operator ×
     motion product space).
-  - [ ] 3.5 Search table (/pattern, n, FR41-FR44).
-  - [ ] 3.6 Undo (u — single level — FR45-FR46).
-  - [ ] 3.7 Ex commands table (:q, :q!, :w, :w filename, :wq, :e filename, :e! per
+  - [x] 3.5 Search table (/pattern, n, FR41-FR44).
+  - [x] 3.6 Undo (u — single level — FR45-FR46).
+  - [x] 3.7 Ex commands table (:q, :q!, :w, :w filename, :wq, :e filename, :e! per
     FR3-FR8).
-  - [ ] 3.8 Other commands — Ctrl-L (FR48), counts in NORMAL mode (FR23), etc.
+  - [x] 3.8 Other commands — Ctrl-L (FR48), counts in NORMAL mode (FR23), etc.
 
-- [ ] **Task 4 — Vi deviations and omissions section (AC: #4)**
-  - [ ] 4.1 Omissions list — start from the suggested list in AC4 and verify each via
+- [x] **Task 4 — Vi deviations and omissions section (AC: #4)**
+  - [x] 4.1 Omissions list — start from the suggested list in AC4 and verify each via
     `grep` against `src/*.asm`. Anything NOT in src/ goes in the omissions table.
-  - [ ] 4.2 Deviations list — every place VIBE deliberately differs from vi:
+  - [x] 4.2 Deviations list — every place VIBE deliberately differs from vi:
     - No `~` empty-line marker (memory: `[[project_no_tilde_marker]]`)
     - CR/CRLF rendering policy (Story 4.4)
     - Welcome-screen first-keystroke dismissal (Story 4.2)
@@ -353,43 +353,43 @@ it's a new piece of work).
     - Single-buffer (PRD architectural limit)
     - Single-level undo (FR45)
     - BDOS-error handling vocabulary (FR51)
-  - [ ] 4.3 Park-able backlog list (theme B) — counted-`n`, counted operators on
+  - [x] 4.3 Park-able backlog list (theme B) — counted-`n`, counted operators on
     visual, etc. — these are "not yet" omissions (different from "never").
-  - [ ] 4.4 Each entry MUST have an FR / deferred-work / memory / triage citation per
+  - [x] 4.4 Each entry MUST have an FR / deferred-work / memory / triage citation per
     AC4's provenance requirement.
 
-- [ ] **Task 5 — Limits section (AC: #5)**
-  - [ ] 5.1 Populate the limits table from Task 0.3's catalogue of equates. Replace
+- [x] **Task 5 — Limits section (AC: #5)**
+  - [x] 5.1 Populate the limits table from Task 0.3's catalogue of equates. Replace
     every `??` marker in AC5's bullet list with the verified value.
-  - [ ] 5.2 Add a sentence on graceful-failure semantics — what happens when a limit is
+  - [x] 5.2 Add a sentence on graceful-failure semantics — what happens when a limit is
     hit (e.g. file too large surfaces FR11 status; yank too large surfaces FR-equivalent
     visual-op status per Story 3.6).
 
-- [ ] **Task 6 — Hacking section (AC: #7)**
-  - [ ] 6.1 Move the existing 5 sections (Prerequisites / Build / Test / Transfer /
+- [x] **Task 6 — Hacking section (AC: #7)**
+  - [x] 6.1 Move the existing 5 sections (Prerequisites / Build / Test / Transfer /
     Repo layout) under a new `## Hacking` heading, verbatim.
-  - [ ] 6.2 Update "Stubbed until Story 1.6" → "Runs the headless test harness;
+  - [x] 6.2 Update "Stubbed until Story 1.6" → "Runs the headless test harness;
     requires iz-cpm on PATH" or similar. Same for "Stubbed until BA4" / Transfer
     section.
-  - [ ] 6.3 Optionally add a `make sizes` mention (used by every story for NFR9
+  - [x] 6.3 Optionally add a `make sizes` mention (used by every story for NFR9
     verification) — verify the target exists and what it prints.
-  - [ ] 6.4 Preserve the architecture.md link.
+  - [x] 6.4 Preserve the architecture.md link.
 
-- [ ] **Task 7 — Self-grep verification pass (AC: #8 step 1)**
-  - [ ] 7.1 For every FR-cited claim in the new README, grep the PRD to verify the FR
+- [x] **Task 7 — Self-grep verification pass (AC: #8 step 1)**
+  - [x] 7.1 For every FR-cited claim in the new README, grep the PRD to verify the FR
     number and the keystroke match. Flag any drift.
-  - [ ] 7.2 For every status-line message claim, grep `src/statusln.asm` for the
+  - [x] 7.2 For every status-line message claim, grep `src/statusln.asm` for the
     `msg_*:` label and confirm the string matches the documented one.
-  - [ ] 7.3 For every limit / cap, grep `inc/equates.inc` for the constant and confirm
+  - [x] 7.3 For every limit / cap, grep `inc/equates.inc` for the constant and confirm
     the number.
-  - [ ] 7.4 For every vi-omission claim, grep `src/*.asm` for the unsupported feature's
+  - [x] 7.4 For every vi-omission claim, grep `src/*.asm` for the unsupported feature's
     keystroke (or, for the feature-without-keystroke cases like `.` repeat, grep for the
     presence of any handler). If a grep hit appears, escalate — the omission claim is
     wrong.
-  - [ ] 7.5 Document all discrepancies + resolutions in the Dev Agent Record.
+  - [x] 7.5 Document all discrepancies + resolutions in the Dev Agent Record.
 
 - [ ] **Task 8 — First-draft handoff to Ant (AC: #8 step 2)**
-  - [ ] 8.1 Update sprint-status.yaml: status `ready-for-dev` → `review`.
+  - [x] 8.1 Update sprint-status.yaml: status `ready-for-dev` → `review`.
   - [ ] 8.2 Present the new README.md to Ant in the chat (or via PR if working
     out-of-band). Frame the handoff with: "First draft; please flag any tone, scope, or
     accuracy concerns. Self-grep done per AC8 step 1 — Task 7 results in Dev Agent
@@ -397,20 +397,20 @@ it's a new piece of work).
   - [ ] 8.3 Iterate on feedback. Document each Ant-requested change as a sub-task here
     (8.3.1, 8.3.2, etc.) with status indicators.
 
-- [ ] **Task 9 — Behavioural spot-check (AC: #8 step 3)**
-  - [ ] 9.1 Pick 3-5 keystroke claims from the README. Suggestions: `gg` (first line),
+- [x] **Task 9 — Behavioural spot-check (AC: #8 step 3)**
+  - [x] 9.1 Pick 3-5 keystroke claims from the README. Suggestions: `gg` (first line),
     `G` (last line), `:wq` (save + quit), `Ctrl-L` (refresh), `dd` (delete line).
-  - [ ] 9.2 For each, find the corresponding `test/cases/*.asm` test that pins the
+  - [x] 9.2 For each, find the corresponding `test/cases/*.asm` test that pins the
     behaviour. Confirm the test name matches the documented behaviour. If no test
     exists, optionally run the keystroke on the host via `iz-cpm` to verify.
-  - [ ] 9.3 Document each spot-check in the Dev Agent Record.
+  - [x] 9.3 Document each spot-check in the Dev Agent Record.
 
-- [ ] **Task 10 — Vi-omission audit (AC: #8 step 4)**
-  - [ ] 10.1 Pick 3-5 documented vi-omissions. Suggestions: `.` repeat, `f`/`t`
+- [x] **Task 10 — Vi-omission audit (AC: #8 step 4)**
+  - [x] 10.1 Pick 3-5 documented vi-omissions. Suggestions: `.` repeat, `f`/`t`
     character-find, marks (`m{a-z}`), search-backward (`?pattern`), multi-level undo.
-  - [ ] 10.2 For each, grep `src/*.asm` and `src/dispatch.asm` for the keystroke /
+  - [x] 10.2 For each, grep `src/*.asm` and `src/dispatch.asm` for the keystroke /
     handler name. Confirm ZERO matches. If a match appears, escalate.
-  - [ ] 10.3 Document each audit in the Dev Agent Record.
+  - [x] 10.3 Document each audit in the Dev Agent Record.
 
 - [ ] **Task 11 — Commit + close (AC: #9)**
   - [ ] 11.1 Stage:
@@ -423,7 +423,7 @@ it's a new piece of work).
   - [ ] 11.2 Commit message: `Story 4.6: comprehensive user docs in README.md`. Optional
     longer body listing the major sections added (Modes / Commands / Vi deviations /
     Limits / Quick-start) for the git-log reader.
-  - [ ] 11.3 Update sprint-status.yaml: `4-6-comprehensive-user-docs-readme: done` after
+  - [x] 11.3 Update sprint-status.yaml: `4-6-comprehensive-user-docs-readme: done` after
     Ant's final acceptance.
 
 ## Dev Notes
@@ -577,29 +577,92 @@ story-type note at the top of the AC block. If executing via `dev-story`, the st
 dev agent (Amelia / bmad-agent-dev) can also run it; the work is mechanical
 research + writing, not code.
 
-(Fill in actual agent model used by dev pass.)
+Executed by **dev-story (Amelia / Claude Opus 4.7, 1M context)** rather than the recommended Paige tech-writer agent. The work is mechanical (PRD/source grep → table population) and within the dev agent's remit.
 
 ### Debug Log References
 
-(To be filled in by dev pass.)
+No production code touched. No build / test runs required. All verification done via grep against the canonical sources listed in AC8 step 1.
 
 ### Completion Notes List
 
-(To be filled in by dev pass; required entries:)
-- Self-grep verification log (Task 7) — any FR / status-message / limit / omission
-  discrepancies found + resolutions.
-- Ant-feedback iteration log (Task 8) — each requested change + how it was addressed.
-- Behavioural spot-check log (Task 9) — the 3-5 keystrokes verified + the test-case
-  evidence chain.
-- Vi-omission audit log (Task 10) — the 3-5 features audited + the grep confirmation.
-- Final README.md line count (no quality threshold, just a metric for the record).
+**Self-grep verification log (Task 7 / AC8 step 1).** Cross-checked every claim in the new README against canonical sources:
+
+- **FR-anchor verification (Task 7.1):** All 22 FR citations in the Commands section (FR3-FR8, FR9-FR11, FR13, FR16, FR18-FR48) cross-checked against `_bmad-output/planning-artifacts/prd.md` lines 688-808. All match.
+- **Status-message verification (Task 7.2):** All 14 active status messages cross-checked against `src/statusln.asm:318-366`. All strings match verbatim. **Discrepancy found and resolved:** initial draft claimed `buffer modified` appears when `:q` is refused. Grep confirmed `msg_buffer_modified` (defined at `src/statusln.asm:318`) has ZERO consumer call-sites across `src/` — it's a defined-but-unused label. The actual `:q` refusal message is `no write since last change` (`msg_no_write`), per `src/exline.asm:74,77,229,250,282`. README updated to remove the wrong row and surface only the live message. **Flagging for Ant:** `msg_buffer_modified` is dead code (29 B incl. terminator); a small-batch cleanup story could remove it for NFR9 hygiene, but that's out of scope for this doc story.
+- **Limits verification (Task 7.3):** Every numeric cap in the Limits table cross-checked against `inc/equates.inc`:
+  - `GAP_BUFFER_MAX = 32768` (line 33) ✓
+  - `UNDO_BUFFER_SIZE = 256` (line 34) ✓
+  - `EX_COMMAND_BUFFER = 64` (line 35) ✓
+  - `SEARCH_PATTERN_BUFFER = 64` (line 41) ✓
+  - `YANK_BUFFER_SIZE = 1024` (line 48) ✓
+  - `FILENAME_BUFFER_SIZE = 16` (line 49) ✓
+  - `SCREEN_ROWS = 24 / SCREEN_COLS = 80 / EDITABLE_ROWS = 23` (lines 55-57) ✓
+- **Vi-omission audit (Task 7.4 / Task 10 / AC8 step 4):** grep against `src/dispatch.asm` for every claimed-not-implemented keystroke returned ZERO matches:
+  - `.` (repeat) — no DEFB `'.'` in dispatch
+  - `f` / `F` / `t` / `T` (char-find) — no DEFB for any
+  - `e` (word-end) — no DEFB `'e'` in dispatch_normal
+  - `%` (matching paren) — no DEFB `'%'`
+  - `H` / `M` / `L` (viewport motions) — no DEFB for any
+  - `Ctrl-D` (0x04) / `Ctrl-U` (0x15) — no DEFB
+  - `r` / `R` / `s` / `S` (replace / overwrite / substitute) — no DEFB for any
+  - `m` (mark set) — no DEFB `'m'`
+  - `q` (macro record) — no DEFB `'q'`
+  - `?` (search-backward prompt) — no DEFB `'?'`
+  - NORMAL-mode `~` — `'~'` appears ONLY in `dispatch_visual` at line 816, bound to `visual_apply_case_toggle`; NOT in `dispatch_normal`. README correctly states NORMAL `~` is unbound.
+
+**Behavioural spot-check log (Task 9 / AC8 step 3).** Picked 5 keystroke claims and located test/cases/*.asm pinning each:
+
+| Claim | Pinning test(s) |
+|---|---|
+| `gg` moves to first line | `motions_gg-via-prefix.asm`, `motions_gg-with-count.asm` |
+| `dd` deletes the current line | `edits_dd-deletes-line.asm` (+ 7 sibling tests covering counted / mid-line / EOF / empty-buffer cases) |
+| `Ctrl-L` triggers full refresh | `welcome_dismissed-on-first-key-ctrl-l.asm` (exercises Ctrl-L through the dispatch hook); full-refresh path also exercised by `render_full-marks-all-dirty.asm` |
+| `:q` refused on dirty buffer / `:q!` forces quit | `exline_q-clean-buffer.asm`, `exline_q-dirty-buffer.asm`, `exline_q-bang-force.asm` |
+| `:w filename` round-trip save | `fileio_save-roundtrip.asm`, `fileio_save-crlf-roundtrip.asm` |
+
+All tests passing per `sprint-status.yaml` history (most recent run: 283 PASS / 1 deliberate-fail at Story 4.5 close). No regressions introduced by this story (doc-only, 0 B production-code delta).
+
+**Final README.md line count.** 234 lines post-iteration-1 (originally 379; trimmed per Ant's "keep it light, keep it pithy" directive). Below the Dev Notes' 250-400 band, which is fine — the band was advisory, not a floor.
+
+**Q-pin decisions (resolved during draft; deferred to Ant for review per AC8 step 2):**
+
+- **Q1 (cheatsheet at top):** ADOPTED YES — `## Cheatsheet` section immediately after the pitch, before Quick-start. ~30 lines of compact ASCII-aligned reference for the experienced vi user.
+- **Q2 (screenshots):** ADOPTED NO. Text descriptions of welcome + status line are sufficient.
+- **Q3 (omissions before/after Commands):** ADOPTED AFTER. Users come for what VIBE does; what it doesn't is secondary context.
+- **Q4 (link to PRD/arch/stories):** ADOPTED architecture.md only. No links to individual story files (too transient). PRD not linked. `deferred-work-triage-2026-05-19.md` referenced inline in the "Not yet" subsection for traceability, not linked (path is in-prose).
+- **Implicit Q5 (`$a` per-line nuance from `[[feedback_uat_trace_cursor]]`):** Surfaced briefly in the Edits prose ("`a` only places the cursor past end-of-line if the cursor was already on the last line at end-of-line; on intermediate lines, `$a` places the cursor at the LF") AND as a Deviations row. Both placements keep the warning discoverable for users hitting the footgun.
+
+**Ant-feedback iteration log (Task 8).**
+
+*Iteration 2 acceptance (2026-05-19):* Ant: "that is absolutely perfect!" — final acceptance after one iteration. Story Status flipped review → done.
+
+*Iteration 1 (2026-05-19):* Ant: "great start! remember it's a user-facing doc. please remove all references to 'design rationale', 'layered architecture', 'implementation sequence', architecture links, FRs, MVPs, any reference to source (*.asm) files. Keep it light. Keep it pithy. People just want a quick ref for how to edit stuff without having to read War and Peace."
+
+Response: README rewritten end-to-end. 379 → 234 lines. Changes:
+- Pitch trimmed to one sentence; dropped the architecture-link paragraph.
+- Dropped the FR column from every Commands / Modes table. Examples in prose dropped FR citations.
+- Dropped source-provenance column from the Vi deviations / Limits tables.
+- Dropped all NFR / AR / BA citations from the Hacking section.
+- Dropped the Repo layout subsection entirely — redundant for a user-facing doc.
+- Rewrote "Out of scope for MVP" omissions into a single prose paragraph naming the keys / commands — much denser.
+- Merged "Park-able backlog" into the prose list rather than calling out a separate section; user doesn't care whether it's "never" or "not yet".
+- Collapsed the verbose mode paragraphs into a 4-bullet description + transitions table + status-line table.
+- Hacking section reduced to a single code block of make targets + a one-line prerequisites paragraph.
+- Verification: grep shows ZERO matches for `FR[0-9]|NFR[0-9]|MVP|architecture\.md|AR[0-9]|BA[0-9]|src/.*\.asm|inc/.*\.inc` across the new README.
+
+**Note on AC7 deviation:** AC7 originally specified "Link to architecture.md preserved (currently line 5 and line 48)". Ant's iteration-1 directive explicitly overrides this — architecture.md link removed per user intent ("remove ... architecture links"). Recording the deviation for traceability.
 
 ### File List
 
-(To be filled in by dev pass; expected fileset per Task 11.1.)
+- `README.md` (rewrite — 48 → 379 lines)
+- `_bmad-output/implementation-artifacts/4-6-comprehensive-user-docs-readme.md` (this file — task checkboxes, Dev Agent Record, File List, Change Log, Status flipped ready-for-dev → review)
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` (story status flip + last_updated journal entry)
 
 ## Change Log
 
 | Date       | Author | Change                                                                       |
 |------------|--------|------------------------------------------------------------------------------|
 | 2026-05-19 | Amelia | Story 4.6 scoped ad-hoc by Ant. Tech-writer story (recommended agent: Paige). Restructures the 48-line dev-loop README.md into a User Guide (modes / commands / vi deviations / limits / quick-start) + a preserved Hacking section. 0 B production-code impact; AC8 review process is round-trip with Ant after self-grep verification. Ready for dev. |
+| 2026-05-19 | Amelia | Story 4.6 dev pass complete (executed via dev-story rather than Paige; doc work is mechanical). README rewritten in one pass — 48 → 379 lines. Self-grep verification (Task 7) caught one discrepancy: initial draft claimed `:q` refusal surfaces `buffer modified`; grep confirmed `msg_buffer_modified` is dead code (0 consumers across src/) and the actual refusal message is `no write since last change` (`msg_no_write`). README corrected. Vi-omission audit (Task 10) returned ZERO matches for `.` / `f` / `F` / `t` / `T` / `e` / `%` / `H` / `M` / `L` / `r` / `R` / `s` / `S` / `m` / `q` / `?` / Ctrl-D / Ctrl-U in dispatch.asm — all documented omissions confirmed absent. NORMAL-mode `~` confirmed unbound (`~` appears only in dispatch_visual:816). Behavioural spot-check (Task 9) pinned 5 keystroke claims to existing test/cases/*.asm. Status ready-for-dev → review; awaiting Ant per AC8 step 2. **Findings for Ant:** `msg_buffer_modified` is a defined-but-unused label in `src/statusln.asm:318` (29 B incl. terminator) — candidate for a future NFR9 hygiene sweep, out of scope here. |
+| 2026-05-19 | Amelia | Ant accepted iteration 1 verbatim: "that is absolutely perfect!" Story Status flipped review → done; sprint-status.yaml flipped to done; commit pending Ant per the project's "single commit pending Ant" convention. |
+| 2026-05-19 | Amelia | Iteration 1 per Ant: "user-facing doc, remove design-rationale / layered-architecture / implementation-sequence / architecture-link / FR / MVP / src-asm-file references. Keep it light and pithy." README rewritten 379 → 234 lines. Every FR column dropped from Commands and Modes tables; provenance columns dropped from Vi deviations and Limits tables; NFR/AR/BA citations dropped from Hacking; Repo-layout subsection dropped; "Out of scope for MVP" rephrased to a single prose paragraph naming each unsupported key/command; park-able backlog merged into omissions prose. Architecture.md link removed (deviates from AC7's "Link to architecture.md preserved" — user directive overrides; recorded in Dev Agent Record). Grep verification: zero matches for `FR[0-9]\|NFR[0-9]\|MVP\|architecture\.md\|AR[0-9]\|BA[0-9]\|src/.*\.asm\|inc/.*\.inc` across the rewritten README. Status stays `review`; awaiting Ant's next pass. |
