@@ -17,10 +17,10 @@ So that FR53 is realized — VIBE has a friendly entry point that announces itse
 **Given** I launch `vibe` with no filename argument (per FR1; `DEFAULT_FCB + 1 == ' '` triggers `fileio_load_initial.no_arg` per Story 2.3 AC2)
 **When** `init_cold_start` finishes the cold-start sequence
 **Then** the editing area (internal rows 0..22 = user-facing rows 1..23) shows the VIBE welcome screen vertically centered: 13 banner lines anchored at internal row 5 (= `(EDITABLE_ROWS - 13) / 2` = `(23 - 13) / 2 = 5`), occupying rows 5..17, with rows 0..4 and rows 18..22 blank (0x20 spaces)
-**And** the banner content matches `banner.txt` in the repo (359 bytes, 13 LF-terminated lines: blank / 7-line ASCII "VIBE" glyph / blank / "          Vi-like Beast Editor" / "            (c) 2026 ant.org" / blank / "            Type :q to quit!"), compiled into `vibe.com` via `INCBIN "../banner.txt"` (Q1 Option A — recommended; preserves single source of truth)
+**And** the banner glyph + literal-text content tracks `banner.txt` in the repo (13 LF-terminated lines: blank / 7-line ASCII "VIBE" glyph / blank / "Vi-like Beast Editor" / "(c) 2026 ant.org" / blank / "Type :q to quit!") — encoded into `vibe.com` as 222 B of RLE data in `src/welcome.asm` (Q1 Option B, per dev-pass choice; saves ~137 B vs the originally-recommended INCBIN path while preserving the glyph layout). Per-row horizontal positioning is recomputed for screen centering rather than reproducing banner.txt's source-file leading-space padding verbatim: glyph rows (lines 2-8) anchor at col 21 = (80-38)/2; "Vi-like Beast Editor" anchors at col 30 = (80-20)/2; "(c) 2026 ant.org" + "Type :q to quit!" anchor at col 32 (post-2026-05-19 hardware-UAT centering pass — see Change Log line 920).
 **And** the status line on row 23 (`STATUS_ROW`, FR49) shows the existing `msg_mode_normal` empty banner (80 spaces — preserves Story 2.3's no-arg behaviour; AR16 "no banner in normal mode" convention; NO new status-line text introduced)
 **And** the underlying gap buffer is empty (`cursor_offset = 0`, `gap_start = GAP_BUFFER_BASE`, `gap_end = GAP_BUFFER_BASE + GAP_BUFFER_MAX`, `file_length = 0` — unchanged from `gapbuf_init` post-Stage-3 state)
-**And** the cursor blinks at internal row 0 / col 0 (top-left of editing area — `render_paint_welcome` ends with an `ESC Y 0,0` reposition, matching `cursor_offset = 0`)
+**And** the cursor blinks at internal row 0 / col 0 (top-left of editing area — `welcome_paint` ends with an `ESC Y 0,0` reposition, matching `cursor_offset = 0`). *Symbol note: under Q3 Option B, the paint routine lives in `src/welcome.asm` as `welcome_paint`; the original AC narrative used `render_paint_welcome` from the Q3 Option A draft.*
 
 **Note on epics.md "`[No Name]` (or equivalent)" wording.** The epic narrative says the status row "shows the normal-mode state — filename `[No Name]` (or equivalent), mode NORMAL, no error". VIBE's existing no-arg banner is the empty `msg_mode_normal` (statusln.asm:341 `DEFB 0` padded to STATUS_LINE_WIDTH spaces per `status_set_message`); per AR16 "vi-convention: no banner in normal mode", this is the equivalent. Story 4.2 introduces NO new status-line strings — the "or equivalent" clause is satisfied by the existing empty banner. Cross-checked per [[feedback_create_story_cross_check]].
 
@@ -63,19 +63,18 @@ input_loop:
     LD      A, (welcome_active)
     OR      A
     JR      Z, .no_welcome
-    LD      A, (input_held_byte)         ; preserve the key byte across the side effects
-    ;; (alternative: PUSH AF before the next stores; depends on hook placement
-    ;;  vs the existing `LD C, A` that already saves the key — see Task 2.4)
+    PUSH    AF                           ; preserve the key byte (A) across the side effects
     XOR     A
     LD      (welcome_active), A
     CALL    render_mark_all_dirty
+    POP     AF                           ; restore key byte for downstream LD C, A
 .no_welcome:
     ;; 2. Per-mode dispatch... (unchanged from Story 2.1)
     LD      C, A
     ...
 ```
 
-*The exact register-preservation detail (saving A=key across the dismissal stores) is left to the dev pass — see Task 2.4 and Q4 below. The cleanest variant moves the hook BEFORE the `LD C, A` and uses `PUSH AF / POP AF` around the `LD (welcome_active), A` + `CALL render_mark_all_dirty`. Estimated cost ~12-15 B.*
+*Adopted variant: PUSH AF / POP AF brackets the dismissal side-effects. The original AC narrative's `LD A, (input_held_byte)` alternative was based on a misread — `input_held_byte` is the input-layer RI5 disambiguation cell (one-shot ESC peek), not a key-preservation cell, so it cannot be used to recover the keystroke here. Q4 Option A (PUSH/POP AF) per the Implementation Questions section is the variant that landed. Actual cost: +15 B per the Change Log.*
 
 **AC4 — Welcome is one-shot: never re-arms even if buffer returns to empty.**
 
@@ -100,10 +99,10 @@ input_loop:
 
 **Given** `make sizes` after Story 4.2 lands
 **When** the listing is read
-**Then** `vibe.com` sits within the NFR9 10240 B ceiling with at least 1000 B residual headroom (projection: ~8600-8900 B = **+418-718 B** for the welcome banner asset + paint routine + dismissal logic + state byte, against the Story 4.1 close baseline of 8182 B)
+**Then** `vibe.com` sits within the NFR9 10240 B ceiling with at least 1000 B residual headroom (original projection: ~8600-8900 B = **+418-718 B** assuming the INCBIN-of-banner.txt route; *actual under Q1 Option B was +380 B → vibe.com = 8562 B / 83.6% / 1678 B headroom — see post-implementation row below*)
 **And** the listing is captured in the Dev Agent Record / Completion Notes List with the actual size + percentage delta against the 10240 B ceiling
 
-**Detailed projection:**
+**Detailed projection (original, pre-Q1-B):**
 
 | Item | Estimated cost | Mid-estimate |
 |---|---|---|
@@ -117,6 +116,19 @@ input_loop:
 | **Total mid-estimate** |  | **+452 B** |
 
 Per [[project_nfr9_cliff_edge]] memory: pad mid-estimates by +50-100 B for spec drift. Adjusted projection: **+452 + 50..100 = +502..552 B → post-4.2 ~8684..8734 B / ~84.8..85.3% of 10240 B / 1506..1556 B headroom.** Comfortably within the 1000 B-headroom AC requirement.
+
+**Post-implementation reconciliation (2026-05-19, Q1 Option B chosen):**
+
+| Item | Actual cost |
+|---|---|
+| `welcome_banner_rle` (222 B RLE data, replaces 359 B INCBIN) | +222 B |
+| `welcome_paint` + `welcome_emit_cell` decoder/helper bodies + 2 B module-private scratch | +131 B |
+| `fileio_load_initial.no_arg` arms `welcome_active = 1` | +5 B |
+| `init_cold_start` Stage 6.5 `CALL NZ, welcome_paint` | +7 B |
+| `vibe.asm` input_loop dismissal hook (PUSH AF / POP AF variant) | +15 B |
+| **Total actual delta** | **+380 B** |
+
+Final `vibe.com` = **8562 B / 83.6% of 10240 B / 1678 B headroom**. Came in 38 B *below* the original projection's lower bound (+418 B); driver was Q1-B's RLE saving ~137 B over the +359 B INCBIN path — partly offset by the new module's decoder body which the projection did not separately scope.
 
 **Spec drift watch.** epics.md AC6 projects "+300-400 B"; this story's mid-estimate is +452 B (+52-152 B over the epic projection). Drift driver: the 359-byte INCBIN of `banner.txt` dominates the budget. Shrink-down levers if needed:
 - **Lever 1 (RLE encoding of banner data, ~80 B savings):** replace `INCBIN` with a hand-rolled run-length-encoded data table (`{row_count_before, byte_count, byte_run...}` per line). banner.txt's visible content is ~270 B; the long runs of `#`, `m`, `"` could pack to ~200 B + ~30 B decode logic ≈ 230 B vs 359 B raw. Saves ~130 B; adds complexity.
@@ -500,6 +512,47 @@ Per Story 4.1 dev-pass debug log entry on AC1 spec drift: dev MUST verify the ac
   - [x] 12.3 Update `_bmad-output/implementation-artifacts/deferred-work.md`: mark "FR53 welcome screen on no-argument launch" as **CLOSED by Story 4.2** (if such an entry exists)
   - [x] 12.4 Update `_bmad-output/implementation-artifacts/sprint-status.yaml` status `4-2-welcome-screen-on-no-argument-launch: review` after dev pass; flip to `done` after Ant confirms hardware UAT
 
+### Review Findings (post-merge code review, 2026-05-19)
+
+Generated by `/bmad-code-review` against commit `1c9e759` (Story 4.2 single-commit). 3 reviewer layers (Blind Hunter / Edge Case Hunter / Acceptance Auditor) ran in parallel against the 2464-line diff and the 922-line spec. Findings deduplicated and triaged below.
+
+**Resolution summary** (after Ant's triage 2026-05-19):
+- **2 patches applied to test code + story narrative** (D1 + D4 below), **2 patches applied to Dev Agent Record** (P1 + P2 below) — see [x] markers.
+- **2 findings moved to deferred-work.md** (D2 + D3 below, hardware-UAT covered or structural argument accepted).
+- **9 originally-deferred items + 5 dismissed-as-noise items** appended to `deferred-work.md` under `## Deferred from: code review of 4-2-welcome-screen-on-no-argument-launch (2026-05-19)`.
+
+**Decision-needed (resolved)** (4):
+
+- [x] [Review][Patched-D1] AC4 regression net strengthened — `welcome_does-not-redraw-after-dismiss.asm` Op 5 was changed from a misleading "defensive welcome_paint call" to a real **op_dd-on-1-line round-trip** (sets up "abc\n", count=1, calls op_dd, asserts file_length returns to 0 AND welcome_active stays 0 — exercises the FR29 buffer-returns-to-empty path the spec narrative named). New **Op 6** sweeps `shadow_buffer[5*80..18*80)` (1040 cells) and asserts every cell == 0x20 — catches a future writer that paints banner glyphs into shadow without arming `welcome_active`. The `:e empty.txt` (FR6) variant was NOT added in this patch (drive-B FCB scaffolding + EMPTY.TXT fixture-stability story required — captured as a follow-up in deferred-work.md). Test still passes (272 pass / 1 deliberate-fail unchanged). Production code untouched; NFR18 SHA `cfeaf4c654...` × 2 verified. Sources: Acceptance Auditor A5, Blind Hunter B8, Edge Case Hunter E5.
+- [x] [Review][Defer-D2] AC3 headless coverage stays inlined-replica-only — deferred to follow-up after Ant's triage (hardware UAT exercises i / : / Esc / Ctrl-L / digit; drift would surface on next UAT cycle). Tracked in `deferred-work.md`. Sources: Blind Hunter B2, Edge Case Hunter E6.
+- [x] [Review][Defer-D3] AC2 test coverage stays at `.new_file` branch only — deferred to follow-up after Ant's triage (structural argument: all non-no-arg branches converge on bypassing `fileio_load_initial.no_arg`; the existing test pins the most-changed branch). Tracked in `deferred-work.md`. Sources: Acceptance Auditor A4, Blind Hunter B7.
+- [x] [Review][Patched-D4] AC1/AC3 narratives amended to match shipped implementation — (a) AC1 line 23 now names `welcome_paint` with a symbol-rename note; (b) AC1 line 20 now describes the RLE encoding + horizontal-centering per-row col_starts (replaces the "matches banner.txt verbatim" promise that the post-UAT centering pass invalidated); (c) AC3 hook snippet (lines 63-72) rewritten to show the actual PUSH AF / POP AF variant — removed the misleading `LD A, (input_held_byte)` alternative since `input_held_byte` is the RI5 disambig cell, not a key-preservation cell; (d) AR13 paragraph (line 545) extended to note the cross-module promotion of `render_emit_byte` / `render_emit_goto` to render.asm's public surface (Q3-B consequence). Sources: Acceptance Auditor A1, A2, A8, A9.
+
+**Patch (applied)** (2):
+
+- [x] [Review][Patched-P1] AC8 Dev Agent Record updated — the SHA section in the Debug Log References (was line 919) now records BOTH the pre-centering dev-pass SHA (`46f285c3...` × 2) and the **post-UAT shipped SHA `cfeaf4c654...` × 2**, explicitly identifying the latter as the binding NFR18 record for commit `1c9e759`. banner.txt's role re-described accurately (no longer INCBIN'd under Q1-B; retained as canonical reference). [_bmad-output/implementation-artifacts/4-2-welcome-screen-on-no-argument-launch.md:919-923]
+- [x] [Review][Patched-P2] AC6 projection table reconciled — original "Detailed projection (pre-Q1-B)" preserved as the historical INCBIN-route estimate; new **Post-implementation reconciliation** table records the Q1-Option-B actuals (welcome_banner_rle 222 B + decoder 131 B + 5 + 7 + 15 = **+380 B**, vibe.com = 8562 B / 83.6% / 1678 B headroom). Explicit note that the actual landed 38 B *below* the original projection's lower bound — benign (RLE saving ~137 B over INCBIN partly offset by new module's decoder body). [_bmad-output/implementation-artifacts/4-2-welcome-screen-on-no-argument-launch.md:99-128]
+
+**Deferred** (9, all checked off — pre-existing or out-of-scope for this review):
+
+- [x] [Review][Defer] No bounds check on `welcome_paint_col` / `welcome_paint_row` in `welcome_emit_cell` — RLE format permits col_start up to 0x7D (col 125) and unbounded row count via 0xFF blank-row markers; OOB writes would corrupt state past `shadow_buffer`. [src/welcome.asm:282-313, 243-248] — deferred, banner is static and ASSERT-pinned at 222 B; defensive only against future banner-asset edits. Sources: B11, E2, E3, E4.
+- [x] [Review][Defer] Banner RLE has no structural integrity assertion beyond `welcome_banner_rle_end - welcome_banner_rle == 222`. 0xFF as a legitimate literal glyph would be mis-framed as EOR. [src/welcome.asm RLE asset] — deferred, format is hand-encoded once; future banner edits would re-trigger this review path. Sources: B6, E11.
+- [x] [Review][Defer] `welcome_paint` depends on `render_init` having seeded `shadow_buffer` with 0x20 — non-glyph cells stay at the seed value rather than being explicitly painted. A future reorder of Stage 6 / Stage 6.5 would expose uninitialized shadow. [src/welcome.asm:89-95 / src/init.asm:352-372] — deferred, ordering is stable and Stage 6 runs unconditionally. Sources: B10, E9.
+- [x] [Review][Defer] No assertion on `welcome_active` field offset stability in `inc/state.inc` — LDIR Stage 1 zero-fill writes the byte, but a future state.inc field reorder could shift relative offsets used by hardcoded test sentinels (e.g., `shadow_buffer + 6*80 + 21`). [inc/state.inc:103] — deferred, NFR18 byte-identical rebuild discipline catches layout drift via SHA divergence. Sources: B12, E12.
+- [x] [Review][Defer] Hook `PUSH AF / POP AF` bracket preserves A and F only — relies on `render_mark_all_dirty` doc-comment "Trashes: A, F" forever. A future change that adds BC/DE/HL clobber would corrupt the key byte in C downstream. [src/vibe.asm:276-284] — deferred, render_mark_all_dirty is one-page bit-set primitive unlikely to grow. Source: E7.
+- [x] [Review][Defer] `shadow_buffer[5*80+0] == 0x20` test assertion in `init_welcome-shown-no-arg.asm` cannot distinguish "untouched render_init seed" from "welcome_emit_cell wrote a space cell". Stronger pattern: poison shadow with 0xAB pre-call, assert it survives at row 5 col 0. [test/cases/init_welcome-shown-no-arg.asm:147-154] — deferred, defensive test-strengthening. Source: E8.
+- [x] [Review][Defer] AC3 cursor-blink position (ESC Y 0,0 trailing emit) verified only via hardware UAT; no headless assertion that `test_capture_buffer` contains the position sequence. [test/cases/init_welcome-shown-no-arg.asm] — deferred, hardware UAT step 1 covers; matches the AC4-Esc gap in scope. Source: A3.
+- [x] [Review][Defer] `welcome_paint` is single-call by construction but the docstring "In:" contract does not mark it non-reentrant. A pre-input render fired between Stage 6.5 and `input_get_key` would erase the banner before the user sees it. [src/welcome.asm:140-150, src/init.asm:368-371] — deferred, no second caller exists today; flag for future re-entry. Sources: E1, E10.
+- [x] [Review][Defer] Magic constant `0,0` cursor home in `welcome_paint.done` — no symbolic `EDITABLE_TOP_ROW` constant; a future title-bar-at-row-0 story would land the cursor mid-banner. [src/welcome.asm:289-292] — deferred, no editor-area-bias change is planned. Source: B5.
+
+**Dismissed as noise** (5):
+
+- Register-clobber contract Stage 6.5 → input_loop: input_loop is entry-state agnostic by design (B1).
+- Shadow-write-before-emit ordering in `welcome_emit_cell`: BIOS_CONOUT in the current architecture cannot fail; no out-of-sync path exists (B3).
+- `render_emit_byte` DE/HL-preservation contract dependency: unchanged invariant from prior stories; not introduced by this PR (B4).
+- Hook PUSH AF / read / OR A inside brackets is "wasted T-states": premature micro-optimisation; cold path fires for one keystroke only (B9).
+- `welcome_paint_col` reset asymmetry vs `welcome_paint_row` explicit reset: works by construction (every non-blank row's col_start handling rewrites `welcome_paint_col`) (B13).
+
 ## Dev Notes
 
 ### Architecture compliance
@@ -507,7 +560,7 @@ Per Story 4.1 dev-pass debug log entry on AC1 spec drift: dev MUST verify the ac
 **AR boundaries — Story 4.2 stays clean across all four AR surfaces.**
 
 - **AR12 (status funnel):** zero new direct call sites. `fileio_load_initial.no_arg`'s existing `JP status_set_message` (msg_mode_normal) is preserved; no new status text introduced. `render_paint_welcome` does NOT call `status_set_message` (it paints to editable rows only; status row is untouched). The `vibe.asm` input_loop dismissal hook does NOT call `status_set_message` (it operates on dirty_rows + welcome_active only).
-- **AR13 (BIOS_CONOUT):** `render.asm` remains the sole BIOS_CONOUT call site in production code. `render_paint_welcome` calls `render_emit_byte` + `render_emit_goto` (both module-private to render.asm; both already use the AR13-compliant single emit path). Post-Story 4.2: `grep -nE 'BIOS_CONOUT' src/*.asm` continues to return matches ONLY inside `src/render.asm`.
+- **AR13 (BIOS_CONOUT):** `render.asm` remains the sole BIOS_CONOUT call site in production code. Under Q3 Option B the paint routine landed as `welcome_paint` in a new module `src/welcome.asm`, which calls `render_emit_byte` + `render_emit_goto` cross-module. Both helpers were previously module-private to render.asm; Story 4.2's Q3-B consequence is that they're promoted to render.asm's `Public:` surface. The AR13 invariant (single BIOS_CONOUT executor) holds — render.asm is still the only module that emits to the BIOS — but the *public surface* of render.asm has widened by two entries. Post-Story 4.2: `grep -nE 'BIOS_CONOUT' src/*.asm` continues to return matches ONLY inside `src/render.asm`.
 - **AR14 (gap_start / gap_end WRITES):** unchanged ownership — `gapbuf.asm` remains the sole writer. `render_paint_welcome` reads NOTHING from the gap buffer (it paints the static banner asset). The dismissal hook reads NOTHING from the gap buffer. `fileio_load_initial.no_arg`'s body is unchanged except for the `LD (welcome_active), A` addition — gap-buffer state is untouched on that path. Post-Story-4.2 grep `LD (gap_start),\|LD (gap_end),` against `src/render.asm` continues to return zero matches; same for `src/vibe.asm`.
 - **AR15 (BDOS_CALL):** zero new call sites. `render_paint_welcome` is BDOS-free. The dismissal hook is BDOS-free. The existing AR15 carve-outs in `fileio_load_initial` (Story 2.3 launch carve-out) are unchanged.
 
@@ -868,7 +921,11 @@ Amelia (bmad-dev-story) running Claude Opus 4.7 (1M context).
   - **Cumulative Story 4.2 delta: +380 B** (vs RLE-path mid-estimate +315 B + drift pad +50-100 B = +365..415 B projected range; landed mid-range).
 - **NFR9 final state:** 8562 B / 83.6% of 10240 B / **1678 B headroom — GREEN.** AC6's "at least 1000 B residual headroom" requirement satisfied with ~678 B slack.
 - **Test count:** 267 pre-Story-4.2 → **271 PASS** post-Story-4.2 (+4 new T1-T4 at sentinels 0x9B..0x9E) / 1 deliberate-fail (`harness_fail` sentinel) unchanged. Both regression tests (`init_default-fcb-no-arg.asm` + `init_cold_start-state-shape.asm`) extended with welcome_active assertions and continue to PASS.
-- **NFR18 byte-identical rebuild:** `make clean && make all` × 2 produced identical SHA-256 `46f285c33873bf9208b0ab17b95420b623d536c39666283560172b2bea5afb51` × 2. banner.txt SHA `e5ca49939c2ce46596e0e93dbbab93ca8527f9bf2530af511b21308b606f1253` (constant across rebuilds — INCBIN-equivalent source-of-truth). Captured for AC8 closure.
+- **NFR18 byte-identical rebuild:**
+  - **Initial dev-pass build** (pre-Ant centering tweak): `make clean && make all` × 2 produced identical SHA-256 `46f285c33873bf9208b0ab17b95420b623d536c39666283560172b2bea5afb51` × 2.
+  - **Post-UAT centering rebuild** (shipped binary): after the 10-byte col_start edit in `welcome_banner_rle` (glyph block +20 cols, line 10 +20 cols, lines 11+13 +20 cols), `make clean && make all` × 2 produced identical SHA-256 `cfeaf4c654e09f458387e33c6557af536daa8514f8ab2af6d5c412e640a6f81a` × 2. **This is the SHA of the shipped `vibe.com`** (commit `1c9e759`).
+  - banner.txt SHA `e5ca49939c2ce46596e0e93dbbab93ca8527f9bf2530af511b21308b606f1253` (held constant across both build cycles — the source-of-truth glyph layout is independent of the RLE col_start packing under Q1 Option B; banner.txt is no longer INCBIN'd but is retained as the canonical reference for the glyph block design).
+  - AC8 closed with the post-centering SHA pair as the binding NFR18 record.
 
 ### Completion Notes List
 

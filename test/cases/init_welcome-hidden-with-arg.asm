@@ -14,11 +14,17 @@
 ;            - DEFAULT_FCB[0]      = 0    (default drive -> B:)
 ;            - DEFAULT_FCB[1..8]   = "NOSUCH  "
 ;            - DEFAULT_FCB[9..11]  = "FS "
-;            - welcome_active      = 0    (pre-set explicitly)
+;            - welcome_active      = 0xAA (POISON — Story 4.3 AC2
+;                                          hardening: any writer to
+;                                          welcome_active across
+;                                          fileio_load_initial.new_file
+;                                          breaks the test, not just
+;                                          writers-of-1)
 ;
 ;          Post-state (after fileio_load_initial):
-;            - welcome_active      == 0   (.new_file path does
-;                                          NOT touch welcome_active)
+;            - welcome_active      == 0xAA (.new_file path does NOT
+;                                           touch welcome_active —
+;                                           poison survives)
 ;            - filename_buffer[0]  != 0   (Story 2.3 AC4 — new-file
 ;                                          path PRESERVES the
 ;                                          parsed filename so a
@@ -26,13 +32,16 @@
 ;                                          into the not-yet-on-disk
 ;                                          file)
 ;
-; AC reference: AC2 (welcome hidden with arg).
+; AC reference: Story 4.2 AC2 (welcome hidden with arg), hardened
+;               by Story 4.3 AC2 to use 0xAA poison instead of a
+;               zero pre-clear.
 ;
 ; Sentinel code at 0xCFFE on failure: 0x9C (Story 4.2 T2).
 ;   Context byte (B) on failure encodes the subtest:
-;     0x01 — welcome_active != 0 (filename-arg path accidentally
-;            set the flag — check that LD A,1; LD (welcome_active),A
-;            is ONLY in fileio.asm's .no_arg branch)
+;     0x01 — welcome_active != 0xAA (filename-arg path TOUCHED the
+;            flag — a writer wrote 0 OR a different value; the
+;            structural invariant 'only .no_arg writes welcome_active'
+;            is broken)
 ;     0x02 — filename_buffer[0] == 0 (Story 2.3 AC4 regression;
 ;            new-file path failed to populate filename_buffer)
 ; ============================================================
@@ -59,7 +68,8 @@
     LD      (status_dirty), A
     LD      (buffer_dirty), A
     LD      (filename_buffer), A
-    LD      (welcome_active), A           ; pre-set the flag to 0 explicitly
+    LD      A, 0xAA                       ; poison welcome_active so any
+    LD      (welcome_active), A           ; writer (0 OR 1) is detected
     CALL    gapbuf_init
 
     ;; Pre-populate DEFAULT_FCB with a non-existent filename
@@ -93,14 +103,15 @@
     ;; .new_file branch on BDOS_OPEN failure.
     CALL    fileio_load_initial
 
-    ;; --- Subtest 1: welcome_active == 0 (filename path did NOT arm flag) ---
+    ;; --- Subtest 1: welcome_active == 0xAA (poison survived — no writer
+    ;;     touched the flag on the .new_file path) ---
     LD      A, (welcome_active)
-    OR      A
-    JR      Z, .ok_active_zero
+    CP      0xAA
+    JR      Z, .ok_active_poison_survived
     LD      B, 0x01
     LD      A, 0x9C
     JP      test_fail
-.ok_active_zero:
+.ok_active_poison_survived:
 
     ;; --- Subtest 2: filename_buffer[0] != 0 (new-file preserved it) ---
     LD      A, (filename_buffer)

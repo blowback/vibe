@@ -50,7 +50,7 @@ PROD_INC := $(wildcard ../inc/*.inc)
 # don't have to be committed. big.bin is matched by the repo-root
 # *.bin .gitignore rule; eof1a.txt is regenerated each `make test`
 # and gitignored explicitly below.
-FIXTURES := fixtures/eof1a.txt fixtures/big.bin
+FIXTURES := fixtures/eof1a.txt fixtures/big.bin fixtures/EMPTY.TXT
 
 .PHONY: all test clean
 
@@ -73,6 +73,21 @@ fixtures/eof1a.txt:
 # msg_file_too_large.
 fixtures/big.bin:
 	dd if=/dev/zero of=$@ bs=128 count=264 2>/dev/null
+
+# Story 4.3: 1-sector empty file for the :e empty.txt round-trip
+# test (test/cases/welcome_active-survives-e-empty-txt.asm). Byte
+# 0 = 0x1A (CP/M soft-EOF), bytes 1..127 = 0x20 (sector padding).
+# Matches the on-disk shape that fileio_save would write for a
+# 0-byte buffer per Story 2.4 AC12. The 0x1A is written via the
+# octal escape \032 so POSIX printf (dash, which Make invokes
+# under Ubuntu) interprets it correctly — the \x1a hex escape is
+# a GNU printf extension that dash does not honour. EMPTY.TXT is
+# also rm'd by the clean: rule (it's the save-test's output file
+# too); the FIXTURES dependency rebuilds it before any cases/*.com
+# runs.
+fixtures/EMPTY.TXT:
+	printf '\032' > $@
+	printf '%127s' '' >> $@
 
 # Build then run: shell loop reports per-case; exits 1 on any
 # non-pass. We build all cases first (fail fast on a build break),
@@ -106,4 +121,4 @@ test: $(COMS) $(FIXTURES)
 	[ $$fail -eq 0 ]
 
 clean:
-	rm -f cases/*.com $(FIXTURES) fixtures/OUT.TXT fixtures/EMPTY.TXT fixtures/PAD100.TXT fixtures/RO.TXT
+	rm -f cases/*.com $(FIXTURES) fixtures/OUT.TXT fixtures/PAD100.TXT fixtures/RO.TXT

@@ -1,45 +1,40 @@
 ; ============================================================
-; Module: test/cases/welcome_dismissed-on-first-key.asm
-; Purpose: Story 4.2 AC3 — verify the dismissal-hook semantics:
-;          one inline keystroke clears welcome_active AND forces
-;          a full editable-area redraw via render_mark_all_dirty.
-;          Drives the hook's exact byte sequence (mirroring
-;          src/vibe.asm input_loop lines 276-284) in the test body,
-;          then asserts the post-state.
+; Module: test/cases/welcome_dismissed-on-first-key-digit.asm
+; Purpose: Story 4.3 AC1 — digit variant of the dismissal-hook
+;          contract. Story 4.2 AC3 names 5 dismissal-key variants
+;          (i, :, Esc, Ctrl-L, a literal digit); the canonical
+;          welcome_dismissed-on-first-key.asm exercises only the
+;          'i' variant. This replica rebinds the key byte to
+;          '5' (0x35 — a representative literal digit; the parser
+;          would accumulate it as a count prefix in normal mode)
+;          and asserts the identical post-state contract: the
+;          dismissal hook is key-agnostic for the welcome_active
+;          clear + render_mark_all_dirty call, varying only in
+;          the key-preservation byte (subtest 6).
 ;
-;          Pre-state:
-;            - welcome_active     = 1   (post-cold-start no-arg state)
-;            - dirty_rows[0..2]   = 0   (cleared so the side-effect
-;                                        of render_mark_all_dirty is
-;                                        observable)
-;            - shadow_buffer      = pre-seeded with 'X' at one banner
-;                                    cell so a regression where the
-;                                    hook accidentally clears shadow
-;                                    surfaces (it should NOT — the
-;                                    hook only flips dirty bits)
+;          NOTE: This test pins ONLY the dismissal-hook
+;          key-preservation contract for the digit byte. The
+;          post-dispatch parser_accumulate_digit behaviour (the
+;          'count prefix is accumulated' half of Story 4.2 AC3
+;          for the digit case) is hardware-UAT-only — driving the
+;          parser end-to-end headlessly is out of scope here.
 ;
-;          Post-state (after the hook sequence + key preservation
-;          PUSH AF / POP AF):
-;            - welcome_active     == 0  (one-shot consumed)
-;            - dirty_rows[0]      == 0xFF (rows 0..7 dirty)
-;            - dirty_rows[1]      == 0xFF (rows 8..15 dirty)
-;            - dirty_rows[2]      == 0xFF (rows 16..23 dirty; the
-;                                          unused bits 24..31 of byte 2
-;                                          are inert per RI1)
-;            - shadow_buffer[6*80+1] == 'X' (unchanged — the hook does
-;                                            NOT touch shadow; that's
-;                                            the next render_diff's
-;                                            job)
-;            - key byte preserved across the PUSH AF / POP AF
-;              brackets — we pre-load A with a sentinel and verify
-;              it survives the dismissal sequence
+;          Pre-state, hook drive sequence, and post-state checks
+;          are byte-identical to the canonical 'i' test — see that
+;          file's header comment for the full state-machine doc.
+;          (This file is ~8 lines longer than the other replicas
+;          only because of the NOTE paragraph above; the test body
+;          itself matches the canonical layout.) This file rebinds:
+;            - the simulated keystroke byte at the PUSH AF site
+;              (was 'i'/0x69, now '5'/0x35)
+;            - the subtest-6 CP comparison (was CP 'i', now CP '5')
 ;
-; AC reference: AC3 (first keystroke dismisses + processed normally).
-;               The "processed normally" half is exercised by
-;               hardware UAT — this headless test pins the dismissal
-;               mechanism + key preservation semantics.
+; AC reference: Story 4.3 AC1 (4-replica dismissal-key coverage).
 ;
-; Sentinel code at 0xCFFE on failure: 0x9D (Story 4.2 T3).
+; Sentinel code at 0xCFFE on failure: 0x9D (reused from Story 4.2
+;   T3 per the Story 4.3 sentinel-reuse rule — assertion shape is
+;   identical across all 5 dismissal-key files, distinguished only
+;   by filename + B-context byte semantics).
 ;   Context byte (B) on failure encodes the subtest:
 ;     0x01 — welcome_active != 0 (hook failed to clear flag)
 ;     0x02 — dirty_rows[0] != 0xFF (render_mark_all_dirty not called
@@ -49,6 +44,7 @@
 ;     0x05 — shadow_buffer[6*80+1] != 'X' (hook clobbered shadow —
 ;            it should NOT; the next render_diff handles the clear)
 ;     0x06 — key byte clobbered across PUSH AF / POP AF brackets
+;            (the digit byte 0x35 was not preserved)
 ; ============================================================
 
 ;; --- Pre-ORG production headers ---
@@ -80,11 +76,12 @@
 
     ;; --- Drive the dismissal hook's byte sequence inline ---
     ;; This mirrors src/vibe.asm:276-284 exactly. The key byte
-    ;; arrives in A (typically from input_get_key); we pre-load A
-    ;; with a sentinel value (0x69 = 'i' = MODE_INSERT trigger,
-    ;; though the hook is mode-agnostic) and verify it survives
-    ;; the PUSH AF / POP AF brackets.
-    LD      A, 'i'                        ; simulated keystroke
+    ;; arrives in A (typically from input_get_key); for the digit
+    ;; variant we pre-load A with '5' (0x35) and verify it
+    ;; survives the PUSH AF / POP AF brackets. The hook itself is
+    ;; mode-agnostic and key-agnostic — it only cares about
+    ;; welcome_active.
+    LD      A, '5'                        ; simulated keystroke: digit '5' / 0x35
     PUSH    AF
     LD      A, (welcome_active)
     OR      A
@@ -146,7 +143,7 @@
 
     ;; --- Subtest 6: key byte preserved across PUSH AF / POP AF ---
     LD      A, C                          ; recover post-hook A
-    CP      'i'
+    CP      0x35                          ; digit byte preserved? (numeric for cross-replica consistency)
     JR      Z, .ok_key_preserved
     LD      B, A
     LD      A, 0x9D
