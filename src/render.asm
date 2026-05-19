@@ -959,6 +959,15 @@ render_skip_one_row:
 ; After cell 79 the routine advances read_pos past any remaining
 ; bytes in the logical line (so the next row's start is correct).
 ;
+; Non-printable filter (Story 2.5 UAT step 11 + Story 4.4 AC4):
+;   CR (0x0D), NUL (0x00), all C0 controls 0x00..0x1F except LF
+;   (which has its own .hit_lf path), TAB (0x09 — also routes
+;   here intentionally), and all high-bit bytes 0x80..0xFF render
+;   as space (0x20). Shadow buffer is updated with 0x20 in
+;   lock-step so the per-cell shadow vs physical-screen invariant
+;   (RI4) holds across scroll-driven re-emits regardless of what
+;   bytes the buffer contains. Closes deferred-work.md L77.
+;
 ; In:      render_row = r; render_read_pos = logical offset of
 ;          row r's first byte.
 ; Out:     row r's screen content reconciled; shadow row r synced;
@@ -995,7 +1004,9 @@ render_emit_one_row:
 .cell_loop:
     LD      A, (render_col)
     CP      SCREEN_COLS
-    JR      NC, .row_emit_done
+    JP      NC, .row_emit_done          ; Story 4.4 review: JR→JP — DEL filter
+                                        ; (+4 B) pushed `.row_emit_done` past
+                                        ; ±128 B JR target range. +1 B.
 
     ;; Compute target byte for this cell.
     LD      A, (render_past_eol)
@@ -1009,6 +1020,12 @@ render_emit_one_row:
     JR      Z, .hit_lf
     CP      0x0D
     JR      Z, .hit_cr                  ; Story 2.5 UAT step 11 fix: CRLF tolerance
+    CP      0x20                        ; Story 4.4 AC4: non-printable filter
+    JR      C, .hit_cr                  ;   (NUL through 0x1F except LF — render as space)
+    CP      0x7F                        ; Story 4.4 review: DEL (0x7F) — C0/C1 boundary
+    JR      Z, .hit_cr                  ;   (closes the filter gap between 0x20..0x7E and 0x80..0xFF)
+    BIT     7, A                        ; Story 4.4 AC4: high-bit filter
+    JR      NZ, .hit_cr                 ;   (0x80..0xFF render as space)
 
     ;; target = A; advance read_pos.
     INC     HL
@@ -1027,11 +1044,21 @@ render_emit_one_row:
     ;; CR. Scroll-driven re-emit exposed the bug because varying line
     ;; lengths put differing content past the CR.
     ;;
-    ;; Treat CR as a space target (render-cell width 1; advance
-    ;; read_pos by 1; do NOT set past_eol — the LF that follows still
-    ;; needs to fire .hit_lf normally). Matches deferred-work line 76's
-    ;; "filter at emit" design call, scoped narrowly to CR for now;
-    ;; TAB / NUL / high-bit handling deferred to a future story.
+    ;; Story 4.4 AC4 generalises this to a non-printable filter: NUL
+    ;; (0x00), C0 controls < 0x20 (except LF which has its own .hit_lf
+    ;; path above), DEL (0x7F — closes the C0/C1 gap; added by Story
+    ;; 4.4 review), and all high-bit bytes (0x80..0xFF) also route
+    ;; here. They share the same shadow-safe shape: advance read_pos
+    ;; by 1, emit space target, do NOT set past_eol. The shadow vs
+    ;; physical-screen invariant (RI4) then holds across scroll
+    ;; re-emits for any byte the buffer might contain. Closes
+    ;; deferred-work.md L77. Per Lever 1 of AC6, .hit_cr and
+    ;; .hit_nonprintable share a single label here (the body is
+    ;; identical; the comment narrates both paths). TAB (0x09) is in
+    ;; the < 0x20 band so it ALSO renders as space — per the AC4
+    ;; scope note this is intentional (TAB visual alignment is lost;
+    ;; corruption safety wins). Option C (TAB-as-multi-cell with
+    ;; shadow tracking) was explicitly rejected at story scoping.
     INC     HL
     LD      (render_read_pos), HL
     LD      A, 0x20
@@ -1102,7 +1129,7 @@ render_emit_one_row:
     LD      A, (render_col)
     INC     A
     LD      (render_col), A
-    JR      .cell_loop
+    JP      .cell_loop                  ; Story 4.4 AC4: JR→JP — cell-loop body grew past ±128 B
 
 .row_emit_done:
     ;; Drain the rest of the logical line so the next row's start

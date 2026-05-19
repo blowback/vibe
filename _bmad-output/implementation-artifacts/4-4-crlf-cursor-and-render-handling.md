@@ -1,6 +1,6 @@
 # Story 4.4: CRLF cursor + render handling (Option A — filter at render emit)
 
-Status: ready-for-dev
+Status: done
 
 <!-- Provenance: Theme A of _bmad-output/implementation-artifacts/deferred-work-triage-2026-05-19.md.
      Closes deferred entries:
@@ -122,7 +122,11 @@ Cost: ~+9 B (1 byte_at_logical call + CP + JR NZ + DEC + reshuffled label).
   (CR), CR check fires, DEC → 0xFFFF (underflow). MUST guard: if HL == 0 before the CR
   skip, leave HL unchanged (cursor stays at 0; line is empty for printable purposes).
   Add explicit `LD A, H ; OR L ; JR Z, .commit` between the CR check and the second DEC.
-  Total cost revised: +11 B.
+  Total cost revised: **+12 B** (post-review reconciliation 2026-05-19 — original
+  spec wrote +11 B but `LD A,H` + `OR L` + `JR Z` + `CALL` + `CP 0x0D` + `JR NZ`
+  + `DEC HL` = 1+1+2+3+2+2+1 = 12 B; the +1 B is harmless within the AC6 drift
+  pad. After review patch the walkback became a 2-byte JR loop so the cost
+  grew by +2 B more — see Review Findings section).
 - LF-only line `"abc\n"` (no CR): DEC → 2 (`c`), CR check fails (byte is `c`, not CR),
   fall through to commit. Existing behaviour preserved.
 - No-trailing-LF last line `"abc"`: motion_find_line_end returns file_length = 3, DEC → 2
@@ -140,7 +144,14 @@ with 0x20 in lock-step so the per-cell shadow vs physical-screen invariant holds
 subsequent scroll-driven re-emits (the same corruption pattern Story 2.5 step 11 fixed for
 CR generalizes to NUL / high-bit).
 
-**Hook implementation pattern** at `src/render.asm:1008-1038` (cell-target compute):
+**Hook implementation pattern** at `src/render.asm:1008-1038` (cell-target compute).
+
+**Post-implementation note (Story 4.4 review 2026-05-19):** Lever 1 was adopted —
+`.hit_nonprintable` was merged into `.hit_cr` (the body shape is identical, and the
+Story 2.5 attribution narrative + the Story 4.4 generalisation now share one comment
+block). The hook pattern below describes the pre-consolidation design; in the
+shipped code, both `JR C, ...` and `JR NZ, ...` target `.hit_cr` directly. The
+0x7F (DEL) byte case was also added in review.
 
 ```asm
     CP      0x0A
@@ -148,21 +159,23 @@ CR generalizes to NUL / high-bit).
     CP      0x0D
     JR      Z, .hit_cr                  ; Story 2.5 UAT step 11 (CR as space)
     CP      0x20                        ; Story 4.4 AC4: non-printable filter
-    JR      C, .hit_nonprintable        ;   (NUL through 0x1F except CR/LF
-                                        ;    handled above)
+    JR      C, .hit_cr                  ;   (NUL through 0x1F except CR/LF
+                                        ;    handled above — merged into
+                                        ;    .hit_cr per Lever 1)
+    CP      0x7F                        ; Story 4.4 review: DEL byte
+    JR      Z, .hit_cr                  ;   (C0/C1 boundary closure)
     BIT     7, A                        ; Story 4.4 AC4: high-bit filter
-    JR      NZ, .hit_nonprintable       ;   (0x80..0xFF render as space too)
+    JR      NZ, .hit_cr                 ;   (0x80..0xFF render as space too)
     ;; target = A; advance read_pos.
     INC     HL
     LD      (render_read_pos), HL
     JR      .have_target
 
-.hit_nonprintable:
-    ;; Same shape as .hit_cr: render as space, advance read_pos by 1,
-    ;; do NOT set past_eol (a subsequent LF still needs .hit_lf
-    ;; normally). Covers NUL (0x00), TAB (0x09 — see scope note below),
-    ;; all other C0 controls except LF (0x0A) which is handled above,
-    ;; and all 0x80..0xFF.
+.hit_cr:
+    ;; Merged body — see src/render.asm for the canonical narrative
+    ;; spanning Story 2.5 (CR-as-space corruption fix) and Story 4.4
+    ;; AC4 generalisation (NUL / C0 / DEL / high-bit). Renders as
+    ;; 0x20, advances read_pos by 1, does NOT set past_eol.
     INC     HL
     LD      (render_read_pos), HL
     LD      A, 0x20
@@ -173,7 +186,7 @@ Cost: ~+12 B (4 byte check + branch + new label body partially shared with .hit_
 may consolidate `.hit_cr` and `.hit_nonprintable` into one label to save another ~5 B; left
 to dev judgment at refactor time).
 
-**TAB scope note.** TAB (0x09) IS in the `< 0x20` range and falls into `.hit_nonprintable`
+**TAB scope note.** TAB (0x09) IS in the `< 0x20` range and falls into the merged `.hit_cr`
 under AC4. This is intentional for the corruption-safety contract (a raw TAB to a VT52
 would advance the cursor by an indeterminate amount the shadow can't predict). It does
 mean TAB-formatted files lose visual alignment in VIBE — the column-count semantics of TAB
@@ -285,42 +298,42 @@ canonicalizes on save, this test fails immediately.
 
 ## Tasks / Subtasks
 
-- [ ] **Task 0 — Cross-check + Q-pin resolution (per [[feedback_create_story_cross_check]])**
-  - [ ] 0.1 Verify pre-state: `make sizes` reports the pre-4.4 baseline (post-4.3 — see
+- [x] **Task 0 — Cross-check + Q-pin resolution (per [[feedback_create_story_cross_check]])**
+  - [x] 0.1 Verify pre-state: `make sizes` reports the pre-4.4 baseline (post-4.3 — see
     note: 4.3 is test-only with NFR18 byte-identical, so pre-4.4 baseline = post-4.2
     baseline 8562 B / 83.6% / 1678 B headroom IFF 4.3 has landed cleanly). If 4.3 is still
     in-flight, pre-4.4 baseline IS 8562 B exactly.
-  - [ ] 0.2 Confirm Q-pin choices (settled by Ant at story scoping; flagged here for the
+  - [x] 0.2 Confirm Q-pin choices (settled by Ant at story scoping; flagged here for the
     dev pass to double-check):
     - **Q-A1**: Filter at render emit (Option A). Adopted.
     - **Q-A2** (cursor landing on CR): CR treated as line boundary equivalent to LF —
       AC1/AC2/AC3 all clamp on CR. Follows naturally from Option A; no separate Q.
     - **Q-A3** (save semantics): bytes preserved verbatim (CRLF round-trip fidelity per
       AC5). Follows naturally from Option A; no save-side code touched.
-  - [ ] 0.3 Confirm pre-4.4 `make test` baseline: `(272 + 7)` if 4.3 has landed, else 272.
+  - [x] 0.3 Confirm pre-4.4 `make test` baseline: `(272 + 7)` if 4.3 has landed, else 272.
     Story 4.4 adds 4 new tests → post-4.4 target is `(pre + 4)` PASS.
 
-- [ ] **Task 1 — AC1: motion_h CR clamp** (AC: #1)
-  - [ ] 1.1 At `src/motions.asm:228-230` (motion_h backward walk), add `CP 0x0D ; JR Z,
+- [x] **Task 1 — AC1: motion_h CR clamp** (AC: #1)
+  - [x] 1.1 At `src/motions.asm:228-230` (motion_h backward walk), add `CP 0x0D ; JR Z,
     .clamp_undo` immediately after the existing `CP 0x0A ; JR Z, .clamp_undo`. +4 B.
-  - [ ] 1.2 Update motion_h's AR23 docstring (`src/motions.asm:112-120`) to note CR is
+  - [x] 1.2 Update motion_h's AR23 docstring (`src/motions.asm:112-120`) to note CR is
     treated as line boundary alongside LF.
-  - [ ] 1.3 No new test required — the CR clamp in motion_h is structurally unreachable in
+  - [x] 1.3 No new test required — the CR clamp in motion_h is structurally unreachable in
     well-formed buffers (cursor never lands on LF or CR). The change is symmetry +
     future-proofing against a j-to-empty-CRLF-line path.
 
-- [ ] **Task 2 — AC2: motion_l CR clamp (load-bearing)** (AC: #2)
-  - [ ] 2.1 At `src/motions.asm:292-293` (motion_l cursor-on-LF defensive guard), add `CP
+- [x] **Task 2 — AC2: motion_l CR clamp (load-bearing)** (AC: #2)
+  - [x] 2.1 At `src/motions.asm:292-293` (motion_l cursor-on-LF defensive guard), add `CP
     0x0D ; JR Z, .done` immediately after the existing LF check. +4 B.
-  - [ ] 2.2 At `src/motions.asm:299-300` (motion_l destination-peek), add `CP 0x0D ; JR Z,
+  - [x] 2.2 At `src/motions.asm:299-300` (motion_l destination-peek), add `CP 0x0D ; JR Z,
     .clamp_undo` immediately after the existing LF check. +4 B.
-  - [ ] 2.3 Update motion_l's AR23 docstring (`src/motions.asm:251-279`) to note the CR
+  - [x] 2.3 Update motion_l's AR23 docstring (`src/motions.asm:251-279`) to note the CR
     clamp; specifically extend the "intra-line EOL" bullet to read "intra-line EOL: byte
     at cursor_offset + 1 is 0x0A OR 0x0D (CRLF tolerance) → stop."
-  - [ ] 2.4 Create `test/cases/motions_l-clamps-at-cr-byte.asm` per AC9 template.
+  - [x] 2.4 Create `test/cases/motions_l-clamps-at-cr-byte.asm` per AC9 template.
 
-- [ ] **Task 3 — AC3: motion_dollar trailing-CR walkback** (AC: #3)
-  - [ ] 3.1 At `src/motions.asm:1022-1024` (motion_dollar walk-back after DEC HL), insert
+- [x] **Task 3 — AC3: motion_dollar trailing-CR walkback** (AC: #3)
+  - [x] 3.1 At `src/motions.asm:1022-1024` (motion_dollar walk-back after DEC HL), insert
     the CR check + empty-line guard per AC3's hook pattern:
 
     ```asm
@@ -343,71 +356,110 @@ canonicalizes on save, this test fails immediately.
     +11 B. *Verify the `motion_byte_at_logical` call doesn't trash registers needed
     downstream — at this point only HL matters; A/F/DE are scratch per the existing
     motion_dollar contract.*
-  - [ ] 3.2 Update motion_dollar's AR23 docstring (`src/motions.asm:991-1004`) to note the
+  - [x] 3.2 Update motion_dollar's AR23 docstring (`src/motions.asm:991-1004`) to note the
     CR walkback: "On CRLF-terminated lines (e.g. `"abc\r\n"`), DEC HL twice (once for LF
     skip, once for CR skip) so cursor lands on the last printable byte."
-  - [ ] 3.3 Create `test/cases/motions_dollar-crlf-skips-cr.asm` per AC9 template.
+  - [x] 3.3 Create `test/cases/motions_dollar-crlf-skips-cr.asm` per AC9 template.
 
-- [ ] **Task 4 — AC4: render_emit_one_row non-printable filter** (AC: #4)
-  - [ ] 4.1 At `src/render.asm:1008-1038` (cell-target compute in render_emit_one_row),
+- [x] **Task 4 — AC4: render_emit_one_row non-printable filter** (AC: #4)
+  - [x] 4.1 At `src/render.asm:1008-1038` (cell-target compute in render_emit_one_row),
     add the non-printable + high-bit checks per AC4's hook pattern. New label
     `.hit_nonprintable` shares the body shape of `.hit_cr` — dev may consolidate to save
-    ~5 B per Lever 1.
-  - [ ] 4.2 Update the AR23 docstring for render_emit_one_row at `src/render.asm:949-970`
+    ~5 B per Lever 1. **(Done at dev time — Lever 1 adopted; both routes target `.hit_cr`.)**
+  - [x] 4.2 Update the AR23 docstring for render_emit_one_row at `src/render.asm:949-970`
     to extend the existing CR-as-space note to cover NUL / control / high-bit.
-  - [ ] 4.3 Create `test/cases/render_emits-nonprintable-as-space.asm` per AC9 template.
+  - [x] 4.3 Create `test/cases/render_emits-nonprintable-as-space.asm` per AC9 template.
 
-- [ ] **Task 5 — AC5: save round-trip regression-pin** (AC: #5)
-  - [ ] 5.1 Create `test/cases/fileio_save-crlf-roundtrip.asm` per AC9 template. No
+- [x] **Task 5 — AC5: save round-trip regression-pin** (AC: #5)
+  - [x] 5.1 Create `test/cases/fileio_save-crlf-roundtrip.asm` per AC9 template. No
     production code changes — `fileio_save` is invariant under Story 4.4; this test pins
     that invariant against future-story drift.
 
-- [ ] **Task 6 — AC6: NFR9 size verification** (AC: #6)
-  - [ ] 6.1 `make sizes` after Tasks 1-5 land; capture the listing verbatim.
-  - [ ] 6.2 Confirm `vibe.com` is within `8588..8648 B` projected range (or `8668..8718 B`
+- [x] **Task 6 — AC6: NFR9 size verification** (AC: #6)
+  - [x] 6.1 `make sizes` after Tasks 1-5 land; capture the listing verbatim.
+  - [x] 6.2 Confirm `vibe.com` is within `8588..8648 B` projected range (or `8668..8718 B`
     with drift pad). At least 1000 B residual headroom under 10240 B ceiling.
-  - [ ] 6.3 If actual size > 8718 B (yellow zone) or > 9240 B (red zone), apply Lever 1
+  - [x] 6.3 If actual size > 8718 B (yellow zone) or > 9240 B (red zone), apply Lever 1
     (consolidate render labels) then Lever 2 (drop high-bit check) per AC6's shrink-down
     section.
 
-- [ ] **Task 7 — AC7: NFR18 byte-identical rebuild** (AC: #7)
-  - [ ] 7.1 `make clean && make all` × 2; capture `vibe.com` SHA-256 both times.
-  - [ ] 7.2 Verify SHAs match (NFR18); record in Completion Notes List.
+- [x] **Task 7 — AC7: NFR18 byte-identical rebuild** (AC: #7)
+  - [x] 7.1 `make clean && make all` × 2; capture `vibe.com` SHA-256 both times.
+  - [x] 7.2 Verify SHAs match (NFR18); record in Completion Notes List.
 
-- [ ] **Task 8 — AC8: Hardware UAT** (AC: #8)
-  - [ ] 8.1 Paste UAT script inline at dev-handoff per
+- [x] **Task 8 — AC8: Hardware UAT** (AC: #8) — *confirmed by Ant 2026-05-19 (UAT iteration 2)*
+  - [x] 8.1 Paste UAT script inline at dev-handoff per
     [[feedback_uat_inline_at_dev_handoff]]; see "Hardware UAT script" section below.
-  - [ ] 8.2 Generate `crlftest.txt` fixture: `printf 'abc\r\ndef\r\nghi\r\n' > crlftest.txt`.
-    Confirm CRLF bytes via `od -An -c crlftest.txt | head`.
-  - [ ] 8.3 Transfer to MicroBeast SD; run the 9-step UAT; capture observations.
+  - [x] 8.2 Generate `crlftest.txt` fixture: `printf 'abc\r\ndef\r\nghi\r\n\032' > crlftest.txt`
+    (**note the trailing `\032` = 0x1A soft-EOF marker** — required to prevent
+    `fileio_load` from reading SD sector tail garbage; see deferred-work entry under
+    "hardware UAT of 4-4" for the underlying preexisting issue). Confirm 16 bytes via
+    `od -An -c crlftest.txt | head`.
+  - [x] 8.3 Transfer to MicroBeast SD; run the 9-step UAT; capture observations.
+    UAT iteration 1 surfaced the `fileio_load`-no-0x1A trap (file came back 256 B with
+    extra trailing garbage past the edits); iteration 2 with the `\032`-terminated
+    fixture round-tripped cleanly (16 bytes on disk, CRs preserved at offsets 3 / 8 /
+    13, X at offset 7, no trailing garbage). Story 4.4 AC1-AC5 invariants all
+    confirmed on real hardware.
 
-- [ ] **Task 9 — `make test` regression check** (AC: #9)
-  - [ ] 9.1 `make test`; capture per-case PASS/FAIL.
-  - [ ] 9.2 Verify the 4 new tests all PASS; no existing test regresses.
-  - [ ] 9.3 Per-AC pin-to-test map for diagnosis:
+- [x] **Task 9 — `make test` regression check** (AC: #9)
+  - [x] 9.1 `make test`; capture per-case PASS/FAIL.
+  - [x] 9.2 Verify the 4 new tests all PASS; no existing test regresses.
+  - [x] 9.3 Per-AC pin-to-test map for diagnosis:
     - AC2 fail → `motions_l-clamps-at-cr-byte.asm` (check 0x0D vs 0x0A confusion in motion_l
       patch)
     - AC3 fail → `motions_dollar-crlf-skips-cr.asm` (check empty-line guard at HL==0)
-    - AC4 fail → `render_emits-nonprintable-as-space.asm` (check `.hit_nonprintable` body
-      mirrors `.hit_cr` exactly)
+    - AC4 fail → `render_emits-nonprintable-as-space.asm` (check the merged `.hit_cr`
+      body — Lever 1 consolidation means there is no separate `.hit_nonprintable`)
     - AC5 fail → `fileio_save-crlf-roundtrip.asm` (would indicate accidental save-side
       modification — should NEVER fail since fileio_save isn't touched)
 
-- [ ] **Task 10 — Commit + close**
-  - [ ] 10.1 Stage all modified/new files:
+- [ ] **Task 10 — Commit + close** — *commit pending Ant approval; sprint-status flipped to `done` after Ant accepted hardware UAT iteration 2*
+  - [x] 10.1 Stage all modified/new files:
     - `src/motions.asm` (AC1+AC2+AC3 — 3 patch sites + AR23 doc updates)
-    - `src/render.asm` (AC4 — 1 patch site + AR23 doc update)
+    - `src/render.asm` (AC4 — 1 patch site + AR23 doc update + 1 B JR→JP for cell_advance)
     - 4 new `test/cases/*.asm` files per AC9
-    - `_bmad-output/implementation-artifacts/deferred-work.md` (3 closure annotations:
-      L77, L220, L266)
+    - `test/Makefile` (added `fixtures/CRLF.TXT` to clean rule — test produces this file
+      via the AC5 round-trip pin)
+    - `_bmad-output/implementation-artifacts/deferred-work.md` (3 closure annotations
+      L77/L220/L266 + 1 new entry under "hardware UAT of 4-4" for the surfaced
+      `fileio_load`-no-0x1A trap)
     - `_bmad-output/implementation-artifacts/4-4-crlf-cursor-and-render-handling.md`
-      (Dev Agent Record + Completion Notes filled in)
+      (Dev Agent Record + Completion Notes + UAT iteration 2 confirmation)
     - `_bmad-output/implementation-artifacts/sprint-status.yaml` (status update)
   - [ ] 10.2 Commit message: `Story 4.4: CRLF cursor + render handling (Option A) —
     closes L77/L220/L266`
-  - [ ] 10.3 Update sprint-status.yaml: flip
-    `4-4-crlf-cursor-and-render-handling: ready-for-dev` → `review` post-dev; flip to `done`
-    after Ant accepts the hardware UAT.
+  - [x] 10.3 Update sprint-status.yaml: flip
+    `4-4-crlf-cursor-and-render-handling: ready-for-dev` → `review` → `done` (hardware
+    UAT iteration 2 accepted by Ant 2026-05-19).
+
+### Review Findings
+
+*Code review 2026-05-19 (bmad-code-review, Opus 4.7 1M, zero-defer mode per Ant's "and don't defer anything" directive). Hardware UAT iteration 2 already confirmed AC1–AC5 on real MicroBeast; findings below are post-UAT review additions for completeness and follow-on regression hardening. None invalidate the UAT-confirmed core behaviours.*
+
+- [x] [Review][Patch] **HIGH — render.asm: 0x7F (DEL, 0111_1111) falls through non-printable filter and emits raw to VT52** [src/render.asm:1021-1024]. The filter is `CP 0x20 / JR C, .hit_cr` (catches < 0x20) + `BIT 7, A / JR NZ, .hit_cr` (catches 0x80..0xFF). 0x7F is neither — falls through to the printable advance and is emitted as-is. AC4 narrative claim "all non-printable bytes render as space" is false for DEL. Fix: add `CP 0x7F ; JR Z, .hit_cr` after the BIT 7 check (+4 B). Hardware UAT didn't surface this because the test fixture lacked 0x7F bytes.
+- [x] [Review][Patch] **HIGH — `render_emits-nonprintable-as-space.asm` asserts only the shadow buffer, missing the AC9-mandated `test_capture_buffer` (BIOS_CONOUT stream) assertions** [test/cases/render_emits-nonprintable-as-space.asm:84-148]. Spec AC9 (lines 274-277) says: "assert the captured byte stream substitutes 0x20 at each non-printable position **AND** shadow_buffer[row*80+col] == 0x20 at those positions." Test loads `test_bios_conout_capture.inc`, resets `test_capture_len`, but never reads back `test_capture_buffer`. A regression where the filter updates shadow correctly but emits a raw non-printable byte to BIOS_CONOUT would pass silently. Fix: after `CALL render_full`, assert `test_capture_buffer[1] == 0x20`, `[3] == 0x20`, `[5] == 0x20` (the substituted positions), plus `[0]=='a' / [2]=='b' / [4]=='c' / [6]=='d'` to anchor the stream ordering. Sentinel codes 0xE8..0xEF.
+- [x] [Review][Patch] **MED — `motion_dollar` walkback only DECs once on CR — malformed `abc\r\r\n` leaves cursor on the inner CR** [src/motions.asm:1046-1056]. AC3 walks back exactly once if the byte at HL is CR. For `abc\r\r\n` (5 bytes + LF = 6), `motion_find_line_end` returns 5 (LF pos), DEC → 4 (inner CR), CR check matches, DEC → 3 (outer CR), commit. Cursor lands on CR byte, violating the "last printable" invariant. Real edge case for PC-imported files with CR-CR-LF sequences (rare but possible from broken transfer flows). Fix: convert the single CR walkback into a small loop — `.cr_walkback: LD A,H ; OR L ; JR Z, .commit ; CALL motion_byte_at_logical ; CP 0x0D ; JR NZ, .commit ; DEC HL ; JR .cr_walkback` (+3 B vs the current open-coded version). Alternatively document `\r\r\n` as out-of-scope. Recommend the loop.
+- [x] [Review][Patch] **MED — `fileio_save-crlf-roundtrip.asm` has no pre-test delete of `B:CRLF.TXT` — a stale identical file from a prior green run could mask a save-side regression** [test/cases/fileio_save-crlf-roundtrip.asm:82-90]. If a future story breaks `fileio_save` such that it skips the write when content matches existing on-disk bytes, this test would pass against the leftover sector. Fix: `LD C, BDOS_DELETE ; LD DE, fcb_scratch ; CALL BDOS_ENTRY` immediately before `CALL fileio_save`. Add `BDOS_DELETE` to `inc/bdos.inc` if not already present. +6 B in the test (no production-code change).
+- [x] [Review][Patch] **MED — render test payload omits TAB (0x09) and CR (0x0D) — two filter paths un-pinned (CR was load-bearing for Story 2.5 UAT step 11 and shared the `.hit_cr` label now generalized)** [test/cases/render_emits-nonprintable-as-space.asm:152]. Spec AC4 "TAB scope note" (lines 176-181) commits to TAB rendering as space (intentional trade-off) but no test pins it; a future filter narrowing could regress this silently. Spec narrative around `.hit_cr` (line 1031-1056 of render.asm) attributes BOTH Story 2.5 (CR) and Story 4.4 (NUL/controls/high-bit) to the merged label — the post-4.4 test should exercise CR too so the consolidated path is end-to-end pinned. Fix: extend `.payload` to include 0x09 (TAB) and 0x0D (CR) bytes with corresponding shadow + capture-buffer assertions. Pair with patch #1 to also include 0x7F. New payload layout (TBD with dev) should keep the 8-byte / single-LF shape so existing assertions don't relocate.
+- [x] [Review][Patch] **LOW — `motion_l` cursor-on-CR defensive guard at lines 305-306 has no regression test** [test/cases/motions_l-clamps-at-cr-byte.asm]. The two existing subtests pin the destination-peek (line 314-315). The cursor-on-CR defensive guard (line 305-306) — structurally unreachable in well-formed buffers post-AC2 but kept for symmetry / future j-to-empty-CRLF-line paths — is unpinned. Fix: add subtest 3 that pokes cursor=3 (the CR byte) on `"abc\r\nxyz"`, calls motion_l once, asserts cursor unchanged (sentinel 0x83). Same rationale as Story 4.1's defensive-pin pattern for empty-buffer regression coverage.
+- [x] [Review][Patch] **LOW — spec body references `.hit_nonprintable` label across AC4 hook pattern, Task 4.1, Task 9.3, and File List — but Lever 1 consolidation merged it into `.hit_cr`** [_bmad-output/implementation-artifacts/4-4-crlf-cursor-and-render-handling.md]. The Dev Agent Record (line 739-741, 783-785) acknowledges the consolidation, but the spec body still describes a separate label that doesn't exist in render.asm. Future readers diffing source vs spec will be confused. Fix: search/replace `.hit_nonprintable` → `.hit_cr` in spec body sections AC4 hook pattern, Task 4.1, Task 9.3, "Files this story modifies" + add a one-line note at AC4 hook pattern that Lever 1 was adopted and the label is the merged `.hit_cr`.
+- [x] [Review][Patch] **LOW — AC3 cost claimed at +11 B but instruction sum is +12 B; +33 B reconciliation arithmetic has a 1-B residual** [_bmad-output/implementation-artifacts/4-4-crlf-cursor-and-render-handling.md]. Spec line 124-126 says "Total cost revised: +11 B" for AC3. Actual instructions added: `LD A,H` (1) + `OR L` (1) + `JR Z` (2) + `CALL motion_byte_at_logical` (3) + `CP 0x0D` (2) + `JR NZ` (2) + `DEC HL` (1) = **12 B**. Dev Agent Record still quotes "+11 B" (Change Log line 825). The measured +33 B production delta (motions +24 = 4+8+12 ; render +9 = 8+1) closes correctly with AC3 at 12 B, not 11 B. Fix: update spec AC3 cost line, NFR9 arithmetic table (line 555-567), and Dev Agent Record AC3 attribution to +12 B. Net measured +33 B unchanged.
+
+*Post-patch verification (2026-05-19):* All 8 patches applied; `make clean && make all` × 2 green; `sha256sum vibe.com` = `0893765a1276efa38c8c014195eb52a674931e9fb70dec9c88fcdc4c490723e0` (byte-identical); `make sizes` = 8602 B / ~84% / 1638 B headroom; `make test` = 283 pass / 1 deliberate-fail (unchanged). Production-code delta: +7 B (0x7F filter +4 B, motion_dollar walkback loop +2 B, JR→JP at `.cell_loop`'s row-done branch +1 B). **Hardware UAT consideration:** review patches changed production code in ways the AC8 UAT script (which tests `abc\r\ndef\r\nghi\r\n` only) does not exercise; the new DEL-filter and `\r\r\n` walkback are defensive additions and the AC1-AC5 invariants Ant confirmed on iteration 2 are preserved. Re-running the AC8 UAT script verbatim is recommended-but-not-strictly-required at Ant's discretion — none of the patches alter behaviour for the UAT fixture's byte content.
+
+**Dismissed during triage (10) — flagged by reviewers but verified non-defects:**
+
+- *"motion_dollar subtest 2 doesn't actually exercise the HL==0 underflow guard via `.no_move` branch"* — false. `motion_find_line_end(\r\nxyz, cursor=0)` returns 1 (LF pos), `SBC HL,DE` → 1 (Z=0, no `.no_move`), `DEC HL` → 0, HL==0 guard fires. Without the guard, byte_at_logical(0)=CR, DEC HL underflows to 0xFFFF, cursor commits at 0xFFFF, test fails. Guard IS exercised.
+- *".hit_cr body has no render_col bump → consecutive non-printables loop forever"* — false. `.hit_cr` falls through `.have_target` → `.cell_advance` which bumps `render_col` and JPs `.cell_loop`. Cell counter advances correctly.
+- *"motion_dollar trashes DE via motion_byte_at_logical, polluting `edits_compose_or_clear`'s D/E state for compose-pair `d$/y$/c$`"* — false. `edits_compose_or_clear` reads only `pending_operator` and `mode_byte` from memory; takes no DE input. Per-operator bodies (`op_compose_d`, etc.) use `motions_compose_entry` memory cell, not register DE. The trash-list documented in motion_dollar's AR23 docstring is correct as written.
+- *"JR→JP at `.cell_advance` could change flag side-effects"* — false. Both JR and JP unconditional are flag-neutral; the conversion is purely a range fix.
+- *"Spec line-number anchors (motion_h:112-120, motion_l:251-279, etc.) drift by ~85 lines vs actual post-edit positions"* — pre-existing doc rot from the spec being written before the dev pass; not introduced by this diff. Anchor drift is normal in BMad spec-vs-source workflow; the dev updated the correct sites.
+- *"`test/fixtures/CRLF.TXT` is untracked binary in working tree — fixture not buildable by make"* — false. The 128-B file at `test/fixtures/CRLF.TXT` is the OUTPUT of `fileio_save-crlf-roundtrip.asm` (the test writes to `B:CRLF.TXT` via BDOS, which lands in `test/fixtures/CRLF.TXT` under the harness's drive-B mapping). The `clean` rule entry is correct — it removes the test artifact so subsequent runs are deterministic. Untracked-after-test is expected, not a defect.
+- *"`d$` on a CRLF line leaves the CR byte in the buffer post-delete (e.g., `abc\r\nxyz` cursor=0 → `d$` deletes `abc` not `abc\r`)"* — intended vi-faithful semantics. `d$` deletes to end-of-line *excluding* the line terminator (CR + LF in this case). Save preserves byte-for-byte per AC5 / Q-A3.
+- *"CR-only buffer (one byte = `\r`) motion_dollar leaves cursor on CR"* — degenerate input. A buffer of only CR has no printable bytes; the HL==0 guard correctly clamps cursor at 0 (cursor was 0 to begin with). Current fallback (cursor unchanged on empty/CR-only line) is the only sensible answer.
+- *"motion_h CR clamp at lines 236-237 has no regression test"* — spec line 308-310 explicitly says no test needed because the cursor-on-LF path that would feed this clamp is structurally unreachable in well-formed buffers (cursor never lands on LF or CR post-AC2). Symmetry-only patch; consciously left untested per design rationale.
+- *"future JR range pressure / status banner format brittleness / BDOS rc convention inconsistency / test-count + SHA unverifiable from diff alone"* — forward-looking concerns or methodology notes, not defects in this diff.
 
 ## Dev Notes
 
@@ -415,7 +467,7 @@ canonicalizes on save, this test fails immediately.
 
 - **AR12 (status funnel):** zero new direct call sites. AC1-AC4 changes are all inside
   motions / render which never call `status_set_message`.
-- **AR13 (BIOS_CONOUT):** unchanged. AC4's `.hit_nonprintable` body emits via
+- **AR13 (BIOS_CONOUT):** unchanged. AC4's merged `.hit_cr` body emits via
   `render_emit_byte` (existing path); render.asm remains the sole BIOS_CONOUT executor.
 - **AR14 (gap_start / gap_end WRITES):** unchanged. motion_h / motion_l / motion_dollar are
   read-only on gap state; render_emit_one_row is read-only on gap state.
@@ -441,8 +493,8 @@ canonicalizes on save, this test fails immediately.
   rows × ~4 T-states = ~7360 T-states ≈ ~1.8 ms additional per full-screen render. Below
   perception threshold; well under NFR3's per-keystroke ceiling.
 - **NFR5 (no crashes):** UNCHANGED. AC3's HL==0 underflow guard is the only crash-adjacent
-  edge; explicitly handled. AC4's `.hit_nonprintable` body mirrors the proven `.hit_cr`
-  body shape.
+  edge; explicitly handled. AC4 routes all non-printable bytes to the proven `.hit_cr`
+  body (Lever 1 consolidation).
 - **NFR9 (code size):** +56 B mid-estimate (+106..156 B with drift pad). See AC6.
 - **NFR18 (byte-identical rebuild):** UNCHANGED — no `INCBIN` or host-state dependencies
   introduced.
@@ -461,11 +513,11 @@ canonicalizes on save, this test fails immediately.
   future-story question (deferred entry once Story 4.4 ships and we have CRLF UAT data).
 
 **`src/render.asm`** (currently ~1320 lines):
-- AMEND `render_emit_one_row` cell-target compute at line 1008-1011 — add `CP 0x20 ; JR C,
-  .hit_nonprintable` + `BIT 7, A ; JR NZ, .hit_nonprintable` after the existing CR check.
-- ADD new label `.hit_nonprintable` between `.hit_cr` (line 1018) and `.hit_lf` (line 1040)
-  with the same body shape as `.hit_cr` (advance read_pos, emit space target, do NOT set
-  past_eol).
+- AMEND `render_emit_one_row` cell-target compute at line 1008-1011 — add the non-printable
+  filter (`CP 0x20 ; JR C, .hit_cr` + `CP 0x7F ; JR Z, .hit_cr` (added in review) +
+  `BIT 7, A ; JR NZ, .hit_cr`) after the existing CR check. Per Lever 1 (adopted at dev
+  time), all four routes share the merged `.hit_cr` body — no separate `.hit_nonprintable`
+  label exists in the shipped code.
 - AMEND AR23 docstring for `render_emit_one_row` to note the extended non-printable filter.
 - PRESERVE: `render_full`, `render_diff`, `render_init`, `render_byte_at_logical`,
   `render_emit_byte`, `render_emit_goto`, and all motion / cursor helpers — they're invariant
@@ -546,7 +598,7 @@ Mid-estimate delta breakdown:
 |--------------------------------------------------|----------|
 | AC1 — motion_h CR clamp                          | +4 B     |
 | AC2 — motion_l CR clamp (2 sites)                | +8 B     |
-| AC3 — motion_dollar trailing-CR walkback + guard | +11 B    |
+| AC3 — motion_dollar trailing-CR walkback + guard | +12 B (post-review +14 B after JR loop) |
 | AC4 — render_emit_one_row non-printable filter   | +12 B    |
 | AC4 — high-bit BIT 7 check (Lever 2 droppable)   | +4 B (already counted above; isolatable for shrink) |
 | AR23 docstring updates                           | +0 B (comment-only) |
@@ -612,9 +664,15 @@ render_emits-nonprintable-as-space, fileio_save-crlf-roundtrip).
 
 **Pre-UAT setup:**
 
-1. On dev host: `printf 'abc\r\ndef\r\nghi\r\n' > crlftest.txt`. Verify with
-   `od -An -c crlftest.txt | head` — expect `a b c \r \n d e f \r \n g h i \r \n`,
-   15 bytes total.
+1. On dev host: `printf 'abc\r\ndef\r\nghi\r\n\032' > crlftest.txt`. Verify with
+   `od -An -c crlftest.txt | head` — expect `a b c \r \n d e f \r \n g h i \r \n 032`,
+   **16 bytes total** (15 payload + 1 CP/M soft-EOF marker). **The trailing `\032`
+   (= 0x1A) is load-bearing** — without it, `fileio_load`'s sector scan finds no
+   soft-EOF marker and loads the full 128-byte SD sector (15 real bytes + 113 bytes
+   of whatever was on that sector previously), which then saves back as 2 sectors of
+   garbage-padded mess. See the "hardware UAT of 4-4" entry in `deferred-work.md` for
+   the preexisting `fileio_load`-no-0x1A trap that Story 4.4's UAT iteration 1
+   surfaced.
 2. Transfer `crlftest.txt` to MicroBeast SD via standard transfer flow. `DIR B:` should
    show `CRLFTEST.TXT` (CP/M reports the file rounded to its sector allocation, e.g. 1
    sector = 128 B — that's expected).
@@ -682,30 +740,148 @@ render_emits-nonprintable-as-space, fileio_save-crlf-roundtrip).
 
 ### Agent Model Used
 
-(to be filled in by dev pass — e.g. `claude-opus-4-7[1m]`)
+`claude-opus-4-7[1m]` (Dev / bmad-dev-story workflow).
 
 ### Debug Log References
 
-(to be filled in by dev pass)
+- One mid-dev breakage caught at AC4 build: adding 4 new conditional jumps to the
+  cell-target compute in `render_emit_one_row` pushed the `.cell_advance` body's
+  `JR .cell_loop` past the ±128 B JR target range (sjasmplus reported "Target out of
+  range (-133)"). Resolved by converting to `JP .cell_loop` (+1 B, no functional
+  change). Documented inline with a Story 4.4 AC4 attribution comment so future
+  readers understand the JR→JP isn't speculative.
+- Mid-dev sizing surprise: a non-clean `make sizes` after the first 4 patches reported
+  8566 B (+4 B vs baseline), which was clearly wrong given the +33-B projection. Root
+  cause was a stale build cache — `make clean && make all` then reported the true
+  size at 8595 B (+33 B), within the projected band. Calls out [[project_nfr9_cliff_edge]]
+  discipline: trust only fresh-build sizes.
 
 ### Completion Notes List
 
-(to be filled in by dev pass; required entries:)
-- `make sizes` post-4.4 snapshot — actual size + percentage delta against 10240 B ceiling
-- `make sizes` pre-4.4 baseline (8562 B / 83.6% / 1678 B headroom OR post-4.3 equivalent
-  if 4.3 has landed)
-- `sha256sum build/vibe.com` post-4.4 (recorded twice via `make clean && make all` × 2
-  per AC7)
-- `make test` PASS/FAIL count delta — target +4 PASS over the pre-4.4 baseline
-- Hardware UAT step 9 actual observed on-disk byte count + the CR-preservation
-  confirmation
+- **`make sizes` pre-4.4 baseline:** `code_section: 8562 bytes (~83% of NFR9 10 KB
+  budget)` (post-4.3; matches the recorded post-4.2 baseline byte-for-byte, confirming
+  4.3 was test-only NFR18 byte-identical as planned).
+- **`make sizes` post-4.4 snapshot:** `code_section: 8595 bytes (~83% of NFR9 10 KB
+  budget)` → +33 B delta vs pre-4.4 baseline. Sits at the lower end of the projected
+  +35..+39 B band (Lever 1 consolidation of `.hit_cr` + `.hit_nonprintable` into a
+  single label saved ~4 B; the JR→JP fix added back 1 B net). Headroom against the
+  10240 B NFR9 ceiling = 1645 B (well above the 1000 B convention; ~84% utilisation).
+- **`make sizes` post-review snapshot (2026-05-19 code-review patches applied):**
+  `code_section: 8602 bytes (~84% of NFR9 10 KB budget)` → +7 B delta vs pre-review
+  +40 B vs pre-4.4 baseline. Breakdown: +4 B 0x7F (DEL) filter in render.asm; +2 B
+  motion_dollar walkback JR loop for malformed `\r\r\n`; +1 B JR→JP at
+  `.cell_loop`'s `JR NC, .row_emit_done` (the DEL `CP 0x7F / JR Z` instructions
+  pushed the forward branch past ±128 B, mirroring the same fix the original
+  Story 4.4 dev pass made at `.cell_advance`'s `JR .cell_loop`). Headroom against
+  the 10240 B NFR9 ceiling = 1638 B (~84% utilisation; well above the 1000 B
+  convention).
+- **`sha256sum vibe.com` post-4.4 (NFR18 byte-identical rebuild check, AC7):**
+  `19a63ec72b483258db1fc019f86f1245105609d2b2322dd9559e3b932b0100be` × 2 across
+  `make clean && make all` cycles. NFR18 holds; new SHA replaces the pre-4.4
+  `cfeaf4c654e09f458387e33c6557af536daa8514f8ab2af6d5c412e640a6f81a` baseline (33 B
+  payload growth + recomputed code-section offsets).
+- **`sha256sum vibe.com` post-review (2026-05-19 code-review patches applied):**
+  `0893765a1276efa38c8c014195eb52a674931e9fb70dec9c88fcdc4c490723e0` × 2 across
+  `make clean && make all` cycles. NFR18 holds; supersedes the post-4.4 SHA above
+  (7 B payload growth from the DEL filter + double-CR walkback loop + JR→JP).
+- **`make test` PASS/FAIL delta:** pre-4.4 baseline 279 pass / 1 deliberate-fail
+  (`harness_fail` sentinel — by design, FR-pinned harness self-test). Post-4.4
+  result: 283 pass / 1 deliberate-fail (delta = +4 PASS exactly per AC9 target).
+  The 4 new passers are `motions_l-clamps-at-cr-byte`, `motions_dollar-crlf-skips-cr`,
+  `render_emits-nonprintable-as-space`, and `fileio_save-crlf-roundtrip`. Zero
+  regressions; `make clean && make test` is green from a fresh tree.
+  **Post-review (2026-05-19):** 283 pass / 1 deliberate-fail unchanged. The 3
+  review-patched tests (`render_emits-nonprintable-as-space` with extended TAB/CR/DEL
+  payload + capture-stream assertions; `fileio_save-crlf-roundtrip` with pre-test
+  `BDOS_DELETE`; `motions_l-clamps-at-cr-byte` with new subtest 3 for the
+  cursor-on-CR defensive guard) all PASS without changing the topline count
+  (extensions are in-test subtests, not new test files).
+- **Lever decisions:** Lever 1 (consolidate `.hit_cr` + `.hit_nonprintable` into a
+  single label sharing the INC HL + LD A,0x20 + JR .have_target tail) **APPLIED** —
+  saved ~4 B and kept the existing CR-attribution narrative attached to the `.hit_cr`
+  comment block (with a new paragraph extending coverage to NUL / controls / high-bit
+  per AC4). Lever 2 (drop high-bit BIT 7 check) **NOT APPLIED** — sizing came in
+  comfortably so the full L77 scope (NUL + controls + high-bit) is preserved per the
+  AC4 corruption-safety contract. Lever 3 (defer motion_h CR clamp) **NOT APPLIED**
+  — kept for symmetry with motion_l per AC1's design rationale.
+- **TAB handling:** TAB (0x09) is in the `< 0x20` band of the AC4 filter and renders
+  as a space (single cell), per the AC4 "TAB scope note" intentional trade-off
+  (corruption safety > visual alignment of TAB-formatted files). Option C
+  (TAB-as-multi-cell with shadow tracking) was explicitly rejected at story scoping
+  and not revisited.
+- **Hardware UAT (AC8):** awaiting Ant on real MicroBeast with the CRLF-imported
+  `crlftest.txt` fixture. UAT script pasted inline below per
+  [[feedback_uat_inline_at_dev_handoff]] (9 steps, includes the off-VIBE
+  `od -An -c crlftest.txt` verification as the binding AC5 / AC8 pin).
+- **Memory hooks honoured:**
+  - [[project_nfr9_cliff_edge]] — drift pad applied to mid-estimate; actual fell at
+    the low end of the projected band. No headroom regression.
+  - [[feedback_uat_inline_at_dev_handoff]] — UAT script pasted inline below.
+  - [[feedback_uat_trace_cursor]] — UAT script traces cursor offset explicitly at
+    every step; step 6's `i X Esc` cursor landing at offset 7 (not 8) is documented
+    per vi-faithful Esc-steps-back-1 semantics.
+  - [[feedback_create_story_cross_check]] — story narrative verified against actual
+    render/edit semantics at Task 0; no drift detected from spec to source-of-truth.
+- **Deferred-work annotations:** L77 (1.11 review), L220 (2.5 review), L266 (2.6
+  review) all marked CLOSED with sub-bullet attribution to Story 4.4 (AC1/AC2/AC3/AC4
+  cited appropriately). The L77 entry's CR-only resolution from Story 2.5 is now
+  fully generalised to NUL / C0 controls / high-bit; the L220/L266 entries' fix
+  recommendations were narrower than the originally-suggested motion_find_line_start
+  approach but achieve the same observable invariant at ~+19 B total vs the original
+  ~+10-15 B estimate (the +1 B underflow guard in AC3 wasn't anticipated by the
+  original L266 suggestion).
 
 ### File List
 
-(to be filled in by dev pass; expected fileset per Task 10.1)
+Production-code changes (2 files; +33 B total):
+- `src/motions.asm` — AC1 (motion_h CR clamp +4 B), AC2 (motion_l 2 sites +8 B),
+  AC3 (motion_dollar walkback + HL==0 underflow guard +12 B; post-review +14 B
+  after JR loop for `\r\r\n` malformed-input handling). AR23 docstrings
+  updated for motion_h / motion_l / motion_dollar to document CR-as-line-boundary
+  behaviour.
+- `src/render.asm` — AC4 (cell-target compute non-printable + high-bit filter
+  routing to `.hit_cr` per Lever 1 consolidation, +8 B; `.cell_advance` `JR
+  .cell_loop` → `JP .cell_loop` for range, +1 B). AR23 docstring for
+  `render_emit_one_row` extended to document the non-printable filter and the L77
+  closure attribution. Inline comment block on `.hit_cr` now narrates both the
+  Story-2.5 CR fix and the Story-4.4 AC4 generalisation.
+
+New tests (4 files; +4 PASS):
+- `test/cases/motions_l-clamps-at-cr-byte.asm` — pins AC2 (2 subtests:
+  `"abc\r\n"` cursor-at-`c` clamp; CR-only `"abc\r"` cursor-at-`c` clamp).
+- `test/cases/motions_dollar-crlf-skips-cr.asm` — pins AC3 (2 subtests: CRLF
+  walkback from cursor=0 on `"abc\r\ndef"` → cursor=2 (`c`); empty `"\r\nxyz"`
+  HL==0 underflow guard → cursor=0).
+- `test/cases/render_emits-nonprintable-as-space.asm` — pins AC4 (single buffer
+  `'a' NUL 'b' 0x80 'c' 0xFF 'd' LF` exercises NUL + high-bit + LF paths;
+  per-cell shadow assertions at offsets 0..7).
+- `test/cases/fileio_save-crlf-roundtrip.asm` — pins AC5 (gap buffer
+  `"abc\r\nxyz\r\n"` saved to B:CRLF.TXT then re-opened + read sector 0; on-disk
+  bytes 0..9 asserted to match the gap exactly, byte 10 = 0x1A soft-EOF, bytes
+  11..127 = 0x20 pad).
+
+Test-harness hygiene (1 file; 0 production-code impact):
+- `test/Makefile` — added `fixtures/CRLF.TXT` to the `clean:` rule (the AC5
+  round-trip test produces this file via `fileio_save`; clean rule keeps repeat
+  `make clean && make test` deterministic, mirroring the existing OUT.TXT /
+  PAD100.TXT / RO.TXT pattern).
+
+Documentation / triage updates (3 files; 0 production-code impact):
+- `_bmad-output/implementation-artifacts/deferred-work.md` — L77, L220, L266
+  annotated CLOSED by Story 4.4 with cited ACs + cited test files + Cost
+  call-outs (the established post-resolution annotation pattern used by Story
+  1.12's closures of lines 71/75/82).
+- `_bmad-output/implementation-artifacts/4-4-crlf-cursor-and-render-handling.md`
+  — this file (Status flip + Tasks/Subtasks ticked + Dev Agent Record +
+  Completion Notes + File List + Change Log).
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` —
+  `4-4-crlf-cursor-and-render-handling: ready-for-dev` → `in-progress` →
+  `review` (last_updated annotation pending Ant's review-pass note convention).
 
 ## Change Log
 
 | Date       | Author | Change                                                                       |
 |------------|--------|------------------------------------------------------------------------------|
 | 2026-05-19 | Amelia | Story 4.4 scoped from Theme A of `deferred-work-triage-2026-05-19.md`. Q-A1 pinned to Option A (filter at render emit + motion CR clamps) by Ant 2026-05-19. Closes deferred entries L77/L220/L266. Production-code delta projected at +35-39 B. Ready for dev. |
+| 2026-05-19 | Dev    | Story 4.4 implementation complete (bmad-dev-story workflow, Opus 4.7 1M). AC1 (motion_h CR clamp +4 B), AC2 (motion_l CR clamp 2 sites +8 B), AC3 (motion_dollar trailing-CR walkback + HL==0 underflow guard +12 B — original spec said +11 B; reconciliation pin in review), AC4 (render_emit_one_row non-printable filter via Lever 1 `.hit_cr` consolidation +8 B + JR→JP for range +1 B) = net +33 B production. AC5 invariant pinned by new save-side regression test (zero production-code changes to fileio.asm). NFR9 actual 8595 B / 84% / 1645 B headroom (within projected 8588..8648 B band). NFR18 SHA `19a63ec72b483258db1fc019f86f1245105609d2b2322dd9559e3b932b0100be` byte-identical × 2. Test count 279 → 283 PASS (+4 exact) / 1 deliberate-fail unchanged. Deferred-work L77/L220/L266 annotated CLOSED with cited AC + test + cost attributions. Status: ready-for-dev → review. AC8 hardware UAT pending Ant on real MicroBeast with `crlftest.txt` CRLF-imported fixture. |
+| 2026-05-19 | Code-review | Review patches applied (zero-defer mode per Ant). Production: `src/render.asm` +4 B DEL (0x7F) filter; `src/motions.asm` +2 B motion_dollar CR walkback loop for malformed `\r\r\n`. Tests: render test extended to assert capture stream + payload now covers TAB/CR/DEL plus existing NUL/0x80/0xFF; round-trip test now BDOS_DELETEs `B:CRLF.TXT` pre-save; motion_l test gains subtest 3 (cursor-on-CR defensive guard). Doc: spec body reconciled — `.hit_nonprintable` references annotated as merged into `.hit_cr` per Lever 1; AC3 cost reconciled +11 → +12 B. Projected production delta: +33 → +39 B (+6 B from review patches: 4 + 2). Pending NFR9 re-check + NFR18 SHA re-capture after build verification. |

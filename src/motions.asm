@@ -198,11 +198,16 @@
 ; steps. Two clamps end the walk early:
 ;   - BOF: cursor_offset == 0 → stop (we're at offset 0; can't
 ;     decrement).
-;   - Intra-line: byte at cursor_offset - 1 is 0x0A → stop without
-;     stepping. Vibe's h does NOT cross the prior newline (epics
-;     line 1061). This produces the same observable behaviour as
-;     real vi's "stop at first non-newline of current line" for any
-;     line that begins at column 0 (the only case pre-tab MVP).
+;   - Intra-line: byte at cursor_offset - 1 is 0x0A OR 0x0D
+;     (Story 4.4 AC1: CR treated as line boundary alongside LF for
+;     CRLF tolerance — symmetric with motion_l's forward clamp;
+;     structurally unreachable today since cursor never lands on
+;     LF/CR, kept for symmetry + future j-to-empty-CRLF-line paths).
+;     → stop without stepping. Vibe's h does NOT cross the prior
+;     newline (epics line 1061). This produces the same observable
+;     behaviour as real vi's "stop at first non-newline of current
+;     line" for any line that begins at column 0 (the only case
+;     pre-tab MVP).
 ;
 ; In:      A = 'h' (MC4; ignored — handler reads count_accumulator
 ;               via motion_apply_count instead of via A).
@@ -228,6 +233,8 @@ motion_h:
     CALL    motion_byte_at_logical      ; A = byte at HL; HL preserved
     CP      0x0A
     JR      Z, .clamp_undo              ; intra-line clamp: undo dec
+    CP      0x0D                        ; Story 4.4 AC1: CR is line boundary
+    JR      Z, .clamp_undo              ;   (CRLF tolerance, symmetric with motion_l)
     DEC     BC
     LD      A, B
     OR      C
@@ -255,14 +262,18 @@ motion_h:
 ;   - EOF: cursor_offset >= file_length (motion_byte_at_logical
 ;     returns CF=1) → stop. (file_length = gap_start + GAP_BUFFER_MAX
 ;     - gap_end.)
-;   - Defensive cursor-on-LF: byte at cursor_offset is 0x0A. This
-;     can happen only if a prior motion (j to an empty line) put
-;     the cursor on a lone newline byte. From that position l is a
-;     no-op (epics line 1067 — l does not cross newlines).
-;   - Intra-line EOL: byte at cursor_offset + 1 is 0x0A → stop.
-;     Cursor can never LAND on the newline byte itself; the
-;     rightmost reachable position on an N-character line is
-;     column N-1 (the last printable byte).
+;   - Defensive cursor-on-LF/CR: byte at cursor_offset is 0x0A OR
+;     0x0D (Story 4.4 AC2: CR treated as line boundary for CRLF
+;     tolerance). This can happen only if a prior motion (j to an
+;     empty line) put the cursor on a lone newline byte. From that
+;     position l is a no-op (epics line 1067 — l does not cross
+;     newlines).
+;   - Intra-line EOL: byte at cursor_offset + 1 is 0x0A OR 0x0D
+;     (Story 4.4 AC2: CRLF tolerance) → stop. Cursor can never LAND
+;     on the newline byte itself; the rightmost reachable position
+;     on an N-character line is column N-1 (the last printable
+;     byte). For a CRLF line the CR byte is also unreachable, so
+;     the rightmost reachable column matches the LF-only equivalent.
 ;
 ; The "peek the destination" check is necessary because the
 ; clamp invariant the spec calls for is "cursor never lands on
@@ -291,6 +302,8 @@ motion_l:
     JR      C, .done                    ; HL == cursor (unchanged) → save as-is
     CP      0x0A
     JR      Z, .done                    ; HL == cursor (unchanged) → save as-is
+    CP      0x0D                        ; Story 4.4 AC2: CR is line boundary
+    JR      Z, .done                    ;   (CRLF tolerance — cursor-on-CR defensive guard)
     ;; Peek the destination: byte at HL + 1. From here on HL is
     ;; speculatively post-INC; failure paths must DEC before saving.
     INC     HL
@@ -298,6 +311,8 @@ motion_l:
     JR      C, .clamp_undo              ; HL == cursor+1 → must DEC before save
     CP      0x0A
     JR      Z, .clamp_undo              ; HL == cursor+1 → must DEC before save
+    CP      0x0D                        ; Story 4.4 AC2: CR is line boundary
+    JR      Z, .clamp_undo              ;   (CRLF tolerance — destination-peek)
     ;; OK to advance — HL is already at cursor+1.
     DEC     BC
     LD      A, B
@@ -994,14 +1009,23 @@ motion_0:
 ; deferred). Algorithm:
 ;   1. eol = motion_find_line_end(cursor_offset).
 ;   2. If eol == cursor_offset → no move (empty line / empty buffer).
-;   3. Otherwise cursor = eol - 1 (the last printable byte; can't
-;      land on the LF byte itself).
+;   3. Otherwise cursor = eol - 1 (the last printable OR CR byte).
+;   4. Story 4.4 AC3 (CRLF tolerance): if byte at cursor is CR
+;      (0x0D), DEC once more so cursor lands on the last printable
+;      byte (skipping the CR before LF on CRLF-terminated lines).
+;      Underflow-guarded: if HL == 0 before the CR skip (empty
+;      `\r\n` line), the cursor stays at 0. Story 4.4 review:
+;      walkback is looped so malformed `\r\r\n` (CR-CR-LF) peels
+;      both trailing CRs; HL==0 guard short-circuits full-underflow.
 ;
 ; In:      A = '$' (MC4; ignored).
 ; Out:     cursor_offset updated (or unchanged on empty-line clamp).
 ;          Parser state cleared via parser_clear tail-JP.
-; Trashes: A, DE, HL, F (BC preserved by motion_find_line_end).
-; Calls:   motion_find_line_end, parser_clear (tail-JP).
+; Trashes: A, DE, HL, F (BC preserved by motion_find_line_end;
+;          motion_byte_at_logical at the AC3 CR-check trashes DE
+;          but DE is unused downstream at that point).
+; Calls:   motion_find_line_end, motion_byte_at_logical (Story 4.4
+;          AC3), parser_clear (tail-JP).
 ; ----------------------------------------------------------------
 motion_dollar:
     ;; Story 2.11 compose prologue + inclusive-landing flag (motion_dollar
@@ -1020,7 +1044,25 @@ motion_dollar:
     SBC     HL, DE                      ; HL = eol - cursor; Z iff equal
     JR      Z, .no_move
     ADD     HL, DE                      ; HL = eol
-    DEC     HL                          ; HL = eol - 1 (last printable byte)
+    DEC     HL                          ; HL = eol - 1 (last printable OR CR byte)
+    ;; Story 4.4 AC3: trailing-CR walkback (CRLF tolerance).
+    ;; If byte at HL is CR, DEC once more so cursor lands on the
+    ;; last PRINTABLE byte (skipping the CR before LF). Guard
+    ;; first against HL==0 underflow on a `\r\n`-only line.
+    ;; Story 4.4 review: looped to handle malformed CR-CR-LF
+    ;; (`\r\r\n`) sequences from broken PC-host transfers — each
+    ;; iteration peels one trailing CR; HL==0 guard short-circuits
+    ;; on full-underflow.
+.cr_walkback:
+    LD      A, H
+    OR      L
+    JR      Z, .commit                  ; HL==0 → empty line; cursor stays at 0
+    CALL    motion_byte_at_logical      ; A = byte at HL; HL preserved
+    CP      0x0D
+    JR      NZ, .commit                 ; not CR → HL is the printable target
+    DEC     HL                          ; HL = previous byte (still might be CR)
+    JR      .cr_walkback
+.commit:
     LD      (cursor_offset), HL
 .no_move:
     JP      edits_compose_or_clear      ; Story 2.11 compose tail
