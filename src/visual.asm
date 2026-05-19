@@ -205,6 +205,13 @@
 ;     visual_op_yank_kind      ; DEFB — KIND_CHAR or KIND_LINE
 ;                              ; from the CHAR / LINE arms (BLOCK
 ;                              ; arm sets yank_kind directly).
+;     visual_op_yank_ok        ; DEFB — 0 = yank refused (over capacity);
+;                              ; 1 = yank ok (within YANK_BUFFER_SIZE).
+;                              ; Written + read by all three arms
+;                              ; (CHAR/LINE via _delete_yank_or_change;
+;                              ; BLOCK via _visual_op_block_arm) — name
+;                              ; dropped the `_block_` infix in Story 4.5
+;                              ; to reflect the cross-arm reuse.
 ;     visual_op_block_rows     ; DEFW — rows cached from
 ;                              ; visual_count_block_dims (Story 3.5
 ;                              ; HL return).
@@ -219,8 +226,6 @@
 ;                              ; + final yank_length seed.
 ;     visual_op_block_remaining_rows ; DEFW — loop counter for both passes.
 ;     visual_op_block_yank_ptr ; DEFW — pass-2 yank_buffer write pointer.
-;     visual_op_block_yank_ok  ; DEFB — 0 = yank refused (over capacity);
-;                              ; 1 = yank ok (within YANK_BUFFER_SIZE).
 ;   Lifecycle: cleared and re-written by visual_apply_operator at
 ;   every call; values valid ONLY between the helper's entry and
 ;   its terminal JP (enter_normal_mode for d/y; enter_insert_mode
@@ -237,8 +242,8 @@
 ;     visual_op_range_start  ; promoted_start stash across the
 ;                            ; edits_indent_walk CALL (which trashes
 ;                            ; HL/DE); read at the cursor-restore step.
-;   The five Story-2.11/2.13 edits_indent_* cells declared in
-;   src/edits.asm (edits_indent_undo_start / _end / _walk_mode /
+;   The four Story-2.11/2.13 edits_indent_* cells declared in
+;   src/edits.asm (edits_indent_undo_start / _walk_mode /
 ;   _walk_dirty / _walk_end) are also reused by visual_apply_shift
 ;   via the existing edits_indent_walk + edits_record_walk helpers —
 ;   Story 3.7 introduces no new cells in either module.
@@ -451,7 +456,7 @@
 ;                Story 3.5/3.6 precedent). yank register UNTOUCHED
 ;                (distinct from visual_apply_operator).
 ;       Trashes: A, BC, DE, HL, F + module-local cells (visual_op_pending,
-;                visual_op_range_start, edits_indent_undo_start / _end,
+;                visual_op_range_start, edits_indent_undo_start,
 ;                edits_indent_walk_mode / _dirty / _end).
 ;       Calls:   motion_find_line_start (CALL × 2 — anchor + cursor
 ;                projection);
@@ -870,7 +875,7 @@ _visual_op_line_arm:
 ;   Pass 1: walk rows top-to-bottom (PRE-delete), sum
 ;           bytes_this_row per row (BH3-clipped at EOL) + LF
 ;           separator bytes between adjacent rows; capacity-check
-;           against YANK_BUFFER_SIZE (sets visual_op_block_yank_ok).
+;           against YANK_BUFFER_SIZE (sets visual_op_yank_ok).
 ;   Pass 2: walk rows top-to-bottom with shift-tracking; for each
 ;           row append bytes_this_row content to yank_buffer
 ;           (if yank_ok) joined by LF separators; for 'd'/'c'
@@ -942,7 +947,7 @@ _visual_op_block_arm:
     JR      NC, .cap_ok
     XOR     A
 .cap_ok:
-    LD      (visual_op_block_yank_ok), A
+    LD      (visual_op_yank_ok), A
 
     ;; --- For 'd' / 'c': record UNDO_KIND_TOO_LARGE direct
     ;; (multi-region undo deferred per Q2 Option A; Story 2.13
@@ -984,7 +989,7 @@ _visual_op_block_arm:
     LD      (visual_op_range_start), HL
 
     ;; If yank_ok: append bytes_this_row content bytes to yank_buffer
-    LD      A, (visual_op_block_yank_ok)
+    LD      A, (visual_op_yank_ok)
     OR      A
     JR      Z, .p2_skip_append
     LD      BC, (visual_op_range_bytes)     ; BC = bytes_this_row
@@ -1022,7 +1027,7 @@ _visual_op_block_arm:
     JR      Z, .p2_last
 
     ;; Not last row: optional LF separator (empty rows STILL get LF sep per AC9)
-    LD      A, (visual_op_block_yank_ok)
+    LD      A, (visual_op_yank_ok)
     OR      A
     JR      Z, .p2_skip_lf
     LD      HL, (visual_op_block_yank_ptr)
@@ -1051,7 +1056,7 @@ _visual_op_block_arm:
     POP     HL                              ; discard saved old_line_end
 
     ;; --- Finalise yank register ---
-    LD      A, (visual_op_block_yank_ok)
+    LD      A, (visual_op_yank_ok)
     OR      A
     JR      Z, .yank_refused
     LD      A, KIND_BLOCK
@@ -1098,13 +1103,11 @@ _visual_op_block_arm:
 .b_dispatch_dy:
     ;; Branch on yank-refusal flag to preserve msg_yank_too_large
     ;; if it was surfaced; otherwise emit the empty mode banner.
-    LD      A, (visual_op_block_yank_ok)
+    LD      A, (visual_op_yank_ok)
     OR      A
     JP      NZ, enter_normal_mode           ; success — clean mode change
-    ;; Refusal: preserve msg_yank_too_large surface; do mode-write inline.
-    LD      A, MODE_NORMAL
-    LD      (mode_byte), A
-    JP      parser_clear
+    ;; Refusal: delegate to helper that preserves msg_yank_too_large.
+    JP      _visual_op_mode_normal_preserve_status
 .b_dispatch_c:
     CALL    edits_dirty_and_redraw          ; 'c' — buffer mutated
     JP      enter_insert_mode               ; AC7: insert banner overwrites status (transient flash)
@@ -1275,7 +1278,7 @@ _visual_op_delete_yank_or_change:
     ;; do a manual MODE_NORMAL write + parser_clear tail to preserve
     ;; the msg_yank_too_large surface.
     LD      A, 1
-    LD      (visual_op_block_yank_ok), A
+    LD      (visual_op_yank_ok), A
 
     LD      A, (visual_op_pending)
     CP      'y'
@@ -1296,7 +1299,7 @@ _visual_op_delete_yank_or_change:
     ;; avoids enter_normal_mode's status_buffer clobber. Deletion
     ;; STILL proceeds (SR6 "predictable failure mode").
     XOR     A
-    LD      (visual_op_block_yank_ok), A
+    LD      (visual_op_yank_ok), A
     LD      HL, msg_yank_too_large
     XOR     A
     CALL    status_set_message
@@ -1342,13 +1345,11 @@ _visual_op_delete_yank_or_change:
     CP      'c'
     JP      Z, enter_insert_mode            ; 'c': INSERT banner is per-spec (AC7 transient flash)
     ;; 'd': branch on refusal flag.
-    LD      A, (visual_op_block_yank_ok)
+    LD      A, (visual_op_yank_ok)
     OR      A
     JP      NZ, enter_normal_mode           ; success — emit empty mode banner
-    ;; Refusal: preserve msg_yank_too_large; do mode change inline.
-    LD      A, MODE_NORMAL
-    LD      (mode_byte), A
-    JP      parser_clear
+    ;; Refusal: delegate to helper that preserves msg_yank_too_large.
+    JP      _visual_op_mode_normal_preserve_status
 
 .yank_only:
     ;; 'y': pure read; no buffer mutation; no undo entry.
@@ -1359,7 +1360,7 @@ _visual_op_delete_yank_or_change:
     JR      NC, .yank_only_ok
     ;; Refused: surface status; flag refusal for tail dispatch.
     XOR     A
-    LD      (visual_op_block_yank_ok), A
+    LD      (visual_op_yank_ok), A
     LD      HL, msg_yank_too_large
     XOR     A
     CALL    status_set_message
@@ -1367,13 +1368,11 @@ _visual_op_delete_yank_or_change:
     ;; Cursor at range_start (Q1 Option A — matches vim's `vwy` semantic).
     LD      HL, (visual_op_range_start)
     LD      (cursor_offset), HL
-    LD      A, (visual_op_block_yank_ok)
+    LD      A, (visual_op_yank_ok)
     OR      A
     JP      NZ, enter_normal_mode           ; success
-    ;; Refusal: preserve msg_yank_too_large.
-    LD      A, MODE_NORMAL
-    LD      (mode_byte), A
-    JP      parser_clear
+    ;; Refusal: delegate to helper that preserves msg_yank_too_large.
+    JP      _visual_op_mode_normal_preserve_status
 
 
 ;; ============================================================
@@ -1428,7 +1427,7 @@ _visual_op_delete_yank_or_change:
 ;          UNDO_KIND_DEDENT_WALK iff edits_indent_walk_dirty == 1
 ;          (no-op walks leave undo EMPTY).
 ; Trashes: A, BC, DE, HL, F + module-local cells (visual_op_pending,
-;          visual_op_range_start, edits_indent_undo_start / _end,
+;          visual_op_range_start, edits_indent_undo_start,
 ;          edits_indent_walk_mode / _dirty / _end).
 ; Calls:   motion_find_line_start (CALL × 2 — anchor + cursor projection);
 ;          motion_find_line_end (CALL × 1 — MAX line-start → its line-end);
@@ -1471,15 +1470,10 @@ visual_apply_shift:
     LD      HL, (visual_op_range_start)     ; HL = promoted_start
 
     ;; Stash undo metadata mirroring op_compose_indent.ci_walk. The
-    ;; cell-based start/end pair is the Story 2.11 contract; the
     ;; post-walk authority for length is edits_indent_walk_end
-    ;; (Story 2.13 Q6 Option B). edits_indent_undo_end is kept for
-    ;; callsite-symmetry (dead-store post-Q6; cleanup logged as
-    ;; deferred-work polish).
+    ;; (Story 2.13 Q6 Option B); the matching pre-walk end stash
+    ;; was retired in Story 4.5 AC3 (cleanup of dead-store cell).
     LD      (edits_indent_undo_start), HL
-    EX      DE, HL                          ; HL = end
-    LD      (edits_indent_undo_end), HL
-    EX      DE, HL                          ; restore HL = start, DE = end
     CALL    undo_clear                      ; pre-walk: undo := EMPTY
 
     ;; Operator byte → mode byte: '>' = 0 (indent), '<' = 1 (dedent).
@@ -2150,6 +2144,27 @@ MSG_MODE_VISUAL_BLOCK_PREFIX_LEN EQU 19
     ASSERT MSG_MODE_VISUAL_BLOCK_PREFIX_LEN + 5 + 1 + 5 + 1 <= 48   ; status_compose_scratch size
 
 
+; ----------------------------------------------------------------
+; _visual_op_mode_normal_preserve_status  (Story 4.5 — AC1)
+; Status-preserving VISUAL→NORMAL mode flip. Direct manual write to
+; mode_byte (NOT `JP enter_normal_mode`, which would clobber
+; status_buffer per the enter_normal_mode-clobbers-status convention).
+; Used by the 3 yank-refusal paths in _visual_op_delete_yank_or_change
+; that must preserve msg_yank_too_large across the mode change.
+;
+; In:      (none — yank-refusal callers reach here via JR/JP after
+;          status_set_message has already set msg_yank_too_large).
+; Out:     mode_byte = MODE_NORMAL; parser state cleared via
+;          parser_clear tail-JP.
+; Trashes: A, F (parser_clear trashes more; see its contract).
+; Calls:   parser_clear (tail-JP).
+; ----------------------------------------------------------------
+_visual_op_mode_normal_preserve_status:
+    LD      A, MODE_NORMAL
+    LD      (mode_byte), A
+    JP      parser_clear
+
+
 ;; ============================================================
 ;; --- Module-local data (Story 3.5 — visual_count_block_dims
 ;;     projection scratch) ---
@@ -2200,6 +2215,7 @@ visual_op_pending:        DEFB 0  ; operator byte ('c' | 'd' | 'y') stashed acro
 visual_op_range_start:    DEFW 0  ; HL stash across the shared-finalisation sub-CALLs
 visual_op_range_bytes:    DEFW 0  ; BC stash, same purpose
 visual_op_yank_kind:      DEFB 0  ; KIND_CHAR / KIND_LINE from the CHAR / LINE arms
+visual_op_yank_ok:        DEFB 0  ; 0 = yank refused (over capacity); 1 = yank ok
 
 ;; --- BLOCK arm scratch (pass-1 + pass-2 + capacity + finalise) ---
 visual_op_block_rows:        DEFW 0  ; rows count cached from visual_count_block_dims HL return
@@ -2211,4 +2227,3 @@ visual_op_block_walker:      DEFW 0  ; per-row line-start walker (pass 1 + pass 
 visual_op_block_total_bytes: DEFW 0  ; pass-1 yank-byte accumulator; pass-2 yank_length seed
 visual_op_block_remaining_rows: DEFW 0  ; loop counter for both passes
 visual_op_block_yank_ptr:    DEFW 0  ; pass-2 yank_buffer write pointer
-visual_op_block_yank_ok:     DEFB 0  ; 0 = yank refused (over capacity); 1 = yank ok

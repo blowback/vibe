@@ -1702,12 +1702,12 @@ op_compose_indent:
     ;; prior undo entry (defensive — `dd >>u` invariant: every mutating
     ;; op records SOMETHING; the prior dd entry must not replay). On
     ;; a real change, the post-walk record_indent_walk overwrites EMPTY.
-    ;; Stash pre-walk (start, end) into module-local DEFWs so we can
-    ;; record after the walk (the walk trashes HL and DE).
+    ;; Stash pre-walk start into a module-local DEFW so we can
+    ;; record after the walk (the walk trashes HL and DE). The
+    ;; post-walk authority for length is edits_indent_walk_end
+    ;; (Story 2.13 Q6 Option B); no pre-walk end stash needed
+    ;; (cleaned up in Story 4.5 AC3).
     LD      (edits_indent_undo_start), HL
-    EX      DE, HL                      ; HL = end
-    LD      (edits_indent_undo_end), HL
-    EX      DE, HL                      ; restore HL = start, DE = end
     CALL    undo_clear
     XOR     A                           ; A=0 → indent mode (insert INDENT_BYTE)
     CALL    edits_indent_walk
@@ -1774,9 +1774,6 @@ op_compose_dedent:
     ;; Story 2.13 hook: stash + pre-clear + walk + post-record. Same shape
     ;; as op_compose_indent.
     LD      (edits_indent_undo_start), HL
-    EX      DE, HL
-    LD      (edits_indent_undo_end), HL
-    EX      DE, HL
     CALL    undo_clear
     LD      A, 1                        ; A=1 → dedent mode
     CALL    edits_indent_walk
@@ -1830,9 +1827,6 @@ op_indent_line:
     POP     HL                          ; HL = line_start
     ;; Story 2.13 hook: stash + pre-clear.
     LD      (edits_indent_undo_start), HL
-    EX      DE, HL
-    LD      (edits_indent_undo_end), HL
-    EX      DE, HL
     CALL    undo_clear
     XOR     A                           ; indent mode
     CALL    edits_indent_walk
@@ -1880,9 +1874,6 @@ op_dedent_line:
     POP     HL
     ;; Story 2.13 hook: stash + pre-clear.
     LD      (edits_indent_undo_start), HL
-    EX      DE, HL
-    LD      (edits_indent_undo_end), HL
-    EX      DE, HL
     CALL    undo_clear
     LD      A, 1                        ; dedent mode
     CALL    edits_indent_walk
@@ -2417,12 +2408,13 @@ edits_indent_walk_end:     DEFW 0
 ; net).
 ;
 ; Q6 Option B fix (Story 2.13): the original implementation read
-; edits_indent_undo_end (caller-stashed PRE-walk end), which caused
-; dedent-undo to over-indent (the inverse walk's indent expanded
-; the bound, taking the walk into lines beyond the originally-
-; dedented range). Reading the post-walk end makes the inverse
-; walk self-correct: indent replay grows DE back to pre-dedent
-; size; dedent replay shrinks DE back to pre-indent size.
+; the caller-stashed PRE-walk end (formerly edits_indent_undo_end,
+; retired in Story 4.5 AC3 once it became a dead store), which
+; caused dedent-undo to over-indent (the inverse walk's indent
+; expanded the bound, taking the walk into lines beyond the
+; originally-dedented range). Reading the post-walk end makes
+; the inverse walk self-correct: indent replay grows DE back to
+; pre-dedent size; dedent replay shrinks DE back to pre-indent size.
 ;
 ; In:      A = kind (UNDO_KIND_INDENT_WALK or UNDO_KIND_DEDENT_WALK).
 ; Out:     undo register populated per the kind's contract.
@@ -2466,4 +2458,3 @@ edits_x_undo_write_ptr:     DEFW 0
 edits_paste_undo_start:     DEFW 0
 edits_paste_undo_bytes:     DEFW 0
 edits_indent_undo_start:    DEFW 0
-edits_indent_undo_end:      DEFW 0

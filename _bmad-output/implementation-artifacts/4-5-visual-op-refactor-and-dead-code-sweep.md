@@ -1,6 +1,6 @@
 # Story 4.5: Visual-op refactor + dead-code sweep (NFR9 hygiene pass)
 
-Status: ready-for-dev
+Status: done
 
 <!-- Provenance: Theme D of _bmad-output/implementation-artifacts/deferred-work-triage-2026-05-19.md.
      Closes deferred entries:
@@ -200,140 +200,89 @@ convention:
 
 ## Tasks / Subtasks
 
-- [ ] **Task 0 — Cross-check + pre-flight verification**
-  - [ ] 0.1 Verify pre-4.5 baseline: `make sizes` reports the binding size; `sha256sum
-    build/vibe.com` recorded as the pre-4.5 reference SHA. If 4.4 has landed, expect
-    ~8597-8601 B; if only 4.3 has landed (byte-identical to 4.2), expect 8562 B; if
-    neither, expect 8562 B.
-  - [ ] 0.2 Re-confirm the stale-entry finding for L254: read `src/motions.asm:778` and
-    verify it shows `OR A` (1 byte) with the in-code attribution comment. If for any
-    reason the byte is still `OR 1`, escalate to Ant — the cross-check finding was wrong
-    and AC4 needs to switch from doc-only to a real production-code patch.
-  - [ ] 0.3 Re-confirm rename safety for AC2: `grep -rnE 'visual_op_block_yank_ok' src/ inc/ test/ _bmad-output/`
-    — expect ALL hits inside `src/visual.asm` (13 lines per current state); hits in
-    `_bmad-output/` (story docs, deferred-work entries) are documentation references and
-    do not block the rename. ZERO hits in `test/cases/*.asm` or `inc/*.inc` is the
-    rename-safe signal.
-  - [ ] 0.4 Confirm pre-4.5 `make test` baseline; record the PASS count (varies by which
-    of 4.3 / 4.4 has landed).
+- [x] **Task 0 — Cross-check + pre-flight verification**
+  - [x] 0.1 Verified pre-4.5 baseline: `make sizes` = **8602 B** (4.4 landed; matches story's "8597-8601 ± 4 B" projection). `sha256sum vibe.com` = `0893765a1276efa38c8c014195eb52a674931e9fb70dec9c88fcdc4c490723e0` (matches sprint-status.yaml's recorded post-4.4 SHA).
+  - [x] 0.2 Re-confirmed stale-entry finding for L254/L258: `src/motions.asm:793` shows `OR A` (1 byte) with in-code attribution at line 796 (`; 1 byte vs the prior OR 1.`). Story's "line 778" reference was approximate — same byte, line offset shifted by intervening edits. AC4 stays doc-only.
+  - [x] 0.3 Re-confirmed rename safety: `grep -rnE 'visual_op_block_yank_ok' src/ inc/ test/` returned 13 hits, ALL in `src/visual.asm`. ZERO hits in `test/cases/*.asm` or `inc/*.inc`. Rename was test-safe.
+  - [x] 0.4 Confirmed pre-4.5 `make test` baseline: **283 pass / 1 fail** (the 1 fail is `harness_fail.asm`, intentional smoke test for the harness's fail-detection path — body asserts `JP test_fail`).
 
-- [ ] **Task 1 — AC1: Extract `_visual_op_mode_normal_preserve_status` helper** (AC: #1)
-  - [ ] 1.1 Add the helper body at the bottom of `src/visual.asm` (between
-    `_visual_op_block_cursor_clamp` — the last code label — and the DEFW block starting
-    around line 2200). Use the AC1 hook pattern verbatim, including the AR23 docstring.
-  - [ ] 1.2 At `src/visual.asm:1104-1107` (the BLOCK-arm refusal path), replace the
-    3-instruction inline tail with `JP _visual_op_mode_normal_preserve_status`. Update
-    the immediately-preceding comment at line 1104 from "do mode-write inline" to
-    "delegate to helper".
-  - [ ] 1.3 Same at `src/visual.asm:1348-1351` (CHAR/LINE-arm refusal path).
-  - [ ] 1.4 Same at `src/visual.asm:1373-1376` (third arm — confirm which by reading the
-    surrounding code, but the pattern is identical).
-  - [ ] 1.5 Add the helper to the AR23 `Module-private:` block in the file header
-    (around line 200-250 — same area as the cell list).
-  - [ ] 1.6 `make all` → verify clean assembly. `make sizes` → expect ~-7 B delta vs
-    pre-4.5 baseline (the AC5 expected sub-delta; sjasmplus alignment may shift by ±2 B).
+- [x] **Task 1 — AC1: Extract `_visual_op_mode_normal_preserve_status` helper** (AC: #1)
+  - [x] 1.1 Helper body inserted at `src/visual.asm` immediately after the ASSERT at line 2150 and before the Module-local data section header at line 2153. Spec's "after `_visual_op_block_cursor_clamp` (the last code label)" reference was inaccurate — the actual last code label is `_visual_compose_finish` (line 2117); insertion point chosen at the natural code/data boundary at end of file. Helper carries the 8-byte body verbatim + the AR23 docstring.
+  - [x] 1.2 Replaced the 3-instruction tail at `src/visual.asm:1104-1107` (BLOCK-arm refusal path) with `JP _visual_op_mode_normal_preserve_status`. Preceding comment updated to "delegate to helper that preserves msg_yank_too_large".
+  - [x] 1.3 Same at `src/visual.asm:1348-1351` (CHAR/LINE-arm refusal path) — comment "do mode change inline" → "delegate to helper that preserves msg_yank_too_large".
+  - [x] 1.4 Same at `src/visual.asm:1373-1376` (`.yank_only_ok` refusal path).
+  - [x] 1.5 The visual.asm header doesn't have a literal "Module-private:" block listing routines; routine-level documentation is colocated with each routine's own AR23 docstring. The helper's own docstring (added at 1.1) fulfils this requirement.
+  - [x] 1.6 `make all` clean. `make sizes` = **8595 B** (8602 → 8595 = **-7 B exactly**, matches AC1 sub-delta projection).
 
-- [ ] **Task 2 — AC2: Rename `visual_op_block_yank_ok` → `visual_op_yank_ok`** (AC: #2)
-  - [ ] 2.1 In `src/visual.asm`, replace every `visual_op_block_yank_ok` with
-    `visual_op_yank_ok`. Use a single-file Edit with `replace_all: true` to be safe; the
-    name is distinctive enough to not collide.
-  - [ ] 2.2 Update the AR23 `Module-private:` block (around line 222) — move the cell from
-    its current "BLOCK-arm specific" comment group to a "CHAR/LINE/BLOCK shared" group.
-    The existing cross-arm reuse comment at line 989-996 should be lightly amended to
-    name the new cell.
-  - [ ] 2.3 `make all` → verify clean assembly with the renamed cell.
-  - [ ] 2.4 `make test` → verify NO test failures (confirms no test/cases/ file
-    references the old name via assertion).
+- [x] **Task 2 — AC2: Rename `visual_op_block_yank_ok` → `visual_op_yank_ok`** (AC: #2)
+  - [x] 2.1 Single-file `replace_all: true` Edit on `src/visual.asm` renamed all 13 occurrences.
+  - [x] 2.2 Moved BOTH the AR23 header documentation block entry AND the DEFB declaration from the "BLOCK arm scratch" comment group to the "CHAR/LINE/BLOCK shared" comment group. Header comment extended to note the cross-arm reuse (CHAR/LINE via `_delete_yank_or_change`; BLOCK via `_visual_op_block_arm`) and that the `_block_` infix was dropped in Story 4.5. The cross-arm-reuse comment at "lines 989-996" called out by the story didn't exist as a discrete comment block in current source (the area is plain code that uses the renamed cell); the routine's body uses the new name consistently post-rename — no separate cross-arm comment needed.
+  - [x] 2.3 `make all` clean.
+  - [x] 2.4 `make test` = 283 pass / 1 deliberate-fail unchanged. `make sizes` = 8595 B (0 B delta from rename, as expected).
 
-- [ ] **Task 3 — AC3: Remove `edits_indent_undo_end` dead-store + 5 writers** (AC: #3)
-  - [ ] 3.1 At `src/edits.asm:1707-1710`, remove the 3-line block
-    (`EX DE, HL ; LD (edits_indent_undo_end), HL ; EX DE, HL`). The `LD (edits_indent_undo_start), HL`
-    at line 1707 stays; the 3 lines that follow it (1708-1710) are dropped together.
-    Update the preceding comment at line 1705-1706 to remove the "(start, end) pair" wording —
-    only `_undo_start` survives.
-  - [ ] 3.2 Same removal pattern at `src/edits.asm:1778` (next indent op).
-  - [ ] 3.3 Same removal pattern at `src/edits.asm:1834` (third indent op).
-  - [ ] 3.4 Same removal pattern at `src/edits.asm:1884` (fourth indent op).
-  - [ ] 3.5 At `src/visual.asm:1479-1482`, remove the same 3-line block (the visual-mode
-    mirror). Update the surrounding comment at `src/visual.asm:1473-1478` to drop the
-    "edits_indent_undo_end is kept for callsite-symmetry" sentence; replace with a one-line
-    note that the cell was removed in Story 4.5.
-  - [ ] 3.6 At `src/edits.asm:2469`, remove the DEFW declaration
-    `edits_indent_undo_end:      DEFW 0`. Confirm via grep that no other reference to the
-    symbol survives (`grep -rnE 'edits_indent_undo_end' src/ inc/ test/`) — expect ZERO
-    hits post-removal. If non-zero, a callsite was missed.
-  - [ ] 3.7 `make all` → verify clean assembly (sjasmplus would error on an undefined
-    symbol if any callsite was missed).
-  - [ ] 3.8 `make test` → verify NO test failures (the dead-store removal must not
-    surface a previously-masked bug in `edits_record_walk` — if it does, escalate
-    immediately because that would mean the cell wasn't actually dead).
-  - [ ] 3.9 `make sizes` → expect cumulative delta vs pre-4.5 of ~-34 B (AC1 -7 + AC3 -27).
+- [x] **Task 3 — AC3: Remove `edits_indent_undo_end` dead-store + 5 writers** (AC: #3)
+  - [x] 3.1 At `src/edits.asm:1701-1710` (op_compose_indent `.ci_walk`), dropped the 3-line `EX/LD/EX` block. Preceding comment updated: "Stash pre-walk (start, end) into module-local DEFWs..." → "Stash pre-walk start into a module-local DEFW so we can record after the walk (the walk trashes HL and DE). The post-walk authority for length is edits_indent_walk_end (Story 2.13 Q6 Option B); no pre-walk end stash needed (cleaned up in Story 4.5 AC3)."
+  - [x] 3.2 Same removal at `src/edits.asm:1773-1779` (op_compose_dedent `.cdd_walk`).
+  - [x] 3.3 Same removal at `src/edits.asm:1831-1835` (op_indent_line indent path).
+  - [x] 3.4 Same removal at `src/edits.asm:1881-1885` (op_dedent_line dedent path).
+  - [x] 3.5 At `src/visual.asm:1472-1481` (visual_apply_shift `.vsh_walk_end`), dropped the same 3-line block AND condensed the 6-line "dead-store rationale" comment down to 4 lines noting the pre-walk-end stash retirement.
+  - [x] 3.6 Removed `edits_indent_undo_end: DEFW 0` at `src/edits.asm:2469`. Post-removal grep: 1 surviving hit at `src/edits.asm:2411` — this is the historic Q6 Option B explanation in `edits_record_walk`'s AR23 docstring, amended to say "formerly edits_indent_undo_end, retired in Story 4.5 AC3" (documentation history, not a live reference). sjasmplus builds clean → no live callsite missed.
+  - [x] 3.7 `make all` clean.
+  - [x] 3.8 `make test` = 283 pass / 1 deliberate-fail unchanged. No indent/dedent regressions (all `undo_indent-*` and `undo_dedent-*` tests continue to pass, confirming `edits_record_walk` reads the live `edits_indent_walk_end` cell and the dead cell really was dead).
+  - [x] 3.9 `make sizes` = **8568 B** (cumulative 8602 → 8568 = **-34 B exactly**, matches AC5 projection).
 
-- [ ] **Task 4 — AC4: Annotate L254 stale entry** (AC: #4)
-  - [ ] 4.1 Verified by Task 0.2; no production code change.
+- [x] **Task 4 — AC4: Annotate L254 stale entry** (AC: #4)
+  - [x] 4.1 Verified by Task 0.2; no production code change. Annotation applied in Task 8.
 
-- [ ] **Task 5 — AC5: Final size verification** (AC: #5)
-  - [ ] 5.1 `make sizes` → capture final `vibe.com` size + percentage + headroom.
-  - [ ] 5.2 Confirm delta vs pre-4.5 baseline is within `-34 ± 4 B` (negative, with
-    sjasmplus alignment slack). If positive or smaller absolute delta than -30 B,
-    investigate before commit.
-  - [ ] 5.3 Record in Dev Agent Record / Completion Notes List.
+- [x] **Task 5 — AC5: Final size verification** (AC: #5)
+  - [x] 5.1 `make sizes` = **8568 bytes (~83% of NFR9 10 KB budget); headroom 1672 B**.
+  - [x] 5.2 Delta vs pre-4.5: -34 B exactly (no sjasmplus alignment slack consumed). Well within `-34 ± 4 B` band.
+  - [x] 5.3 Recorded in Completion Notes List below.
 
-- [ ] **Task 6 — AC6: NFR18 byte-identical rebuild** (AC: #6)
-  - [ ] 6.1 `make clean && make all` × 2; capture `vibe.com` SHA-256 both times.
-  - [ ] 6.2 Verify the two post-4.5 SHAs match each other.
-  - [ ] 6.3 Verify the post-4.5 SHA DIFFERS from the pre-4.5 baseline SHA (confirms the
-    refactor actually changed bytes — if equal, no patches landed).
-  - [ ] 6.4 Record both pre and post SHAs in Completion Notes for regression reference.
+- [x] **Task 6 — AC6: NFR18 byte-identical rebuild** (AC: #6)
+  - [x] 6.1 `make clean && make all` × 2.
+  - [x] 6.2 Build 1 SHA = `3f36a583d9b0b2e3ddd423bb6447568b19982c650ff25a1d79e36bc0119cd034`; Build 2 SHA = `3f36a583d9b0b2e3ddd423bb6447568b19982c650ff25a1d79e36bc0119cd034`. **Match** — NFR18 invariant held.
+  - [x] 6.3 Post-4.5 SHA `3f36a583...` differs from pre-4.5 SHA `0893765a...` — confirms refactor actually changed bytes.
+  - [x] 6.4 Both SHAs recorded in Completion Notes List below.
 
-- [ ] **Task 7 — AC7: Test regression check** (AC: #7)
-  - [ ] 7.1 `make test` → capture per-case PASS/FAIL summary.
-  - [ ] 7.2 Confirm PASS count is identical to pre-4.5 baseline (delta = 0 in both
-    directions).
-  - [ ] 7.3 If any visual-op or indent-op test fails, diagnose:
-    - Visual-op fail → AC1 helper extraction broken. Check that the helper body matches
-      the original 3-instruction sequence exactly (`LD A, MODE_NORMAL ; LD (mode_byte),
-      A ; JP parser_clear`) and that each `JP _visual_op_mode_normal_preserve_status`
-      replaces the full 3-instruction tail (not partial).
-    - Indent-op fail → AC3 dead-store removal accidentally hit a live store. Re-grep
-      `edits_indent_undo_end` against the source tree to ensure ZERO surviving references;
-      if there was a reader somewhere not previously identified, the cell wasn't actually
-      dead — escalate and revert AC3.
-    - Yank-refusal fail (status_buffer == msg_mode_normal post-yank-too-large) → AC1
-      helper accidentally calls `enter_normal_mode` instead of doing the manual write +
-      `JP parser_clear`. Per [[feedback_enter_normal_mode_clobbers_status]], this is the
-      classic trap.
+- [x] **Task 7 — AC7: Test regression check** (AC: #7)
+  - [x] 7.1 `make test` = 283 pass / 1 fail.
+  - [x] 7.2 PASS count identical to pre-4.5 baseline (delta = 0 in both directions). The single "fail" is `harness_fail.asm` (intentional smoke test that exercises the harness's fail-detection path — same as pre-4.5 baseline; not a regression).
+  - [x] 7.3 No visual-op or indent-op test failures — no diagnostic branch needed.
 
-- [ ] **Task 8 — AC9: Annotate deferred-work.md** (AC: #9)
-  - [ ] 8.1 In `_bmad-output/implementation-artifacts/deferred-work.md`, locate the 5
-    referenced entries:
-    - L461 (3.6 review — duplicated tails)
-    - L462 (3.6 review — yank_ok rename)
-    - L472 (3.7 review — edits_indent_undo_end)
-    - L425 (2.13 dev — same as L472)
-    - L254 (2.6 dev — is_word_char OR 1)
-  - [ ] 8.2 Apply the AC9 annotations matching the existing in-place convention. L254
-    uses the "CLOSED pre-Story-4.5" variant per AC4; the other four use "CLOSED by
-    Story 4.5 (AC<n>)".
-  - [ ] 8.3 Single-line shape per closure: `**CLOSED by Story 4.5 (AC<n>)**: net ~-34 B
-    delta from helper extraction + dead-store cleanup. 0 B production-code change for L254
-    (already removed pre-4.5).`
+- [x] **Task 8 — AC9: Annotate deferred-work.md** (AC: #9)
+  - [x] 8.1 Located all 5 referenced entries in `_bmad-output/implementation-artifacts/deferred-work.md`:
+    - L466 (3.6 review — three duplicated tails; story numbered as L461)
+    - L467 (3.6 review — yank_ok rename; story numbered as L462)
+    - L477 (3.7 review — edits_indent_undo_end; story numbered as L472)
+    - L430 (2.13 dev — same cleanup as L477; story numbered as L425)
+    - L258 (2.6 dev — is_word_char OR 1; story numbered as L254)
+    (Line numbers shifted vs the story spec since the deferred-work file has grown — Stories 4.1-4.4 added entries that pushed earlier ones down. The story's L<n> identifiers were stable at story-scoping time; current line numbers above.)
+  - [x] 8.2 Applied AC9 annotations as sub-bullets matching the most recent convention (Story 4.4's "Resolved by Story X (ACy)" sub-bullet pattern at L271). L258 uses "CLOSED pre-Story-4.5 (already removed)" variant per AC4; the other four use "CLOSED by Story 4.5 (AC<n>)".
+  - [x] 8.3 Each closure sub-bullet includes the specific AC, the byte-budget arithmetic, and the load-bearing invariants preserved (e.g. the `enter_normal_mode`-clobbers-status convention for AC1).
 
-- [ ] **Task 9 — Commit + close**
-  - [ ] 9.1 Stage:
+- [x] **Task 9 — Commit + close**
+  - [ ] 9.1 Stage (pending Ant):
     - `src/visual.asm` (AC1 helper + AC2 rename + AC3 visual-mode callsite removal + AR23 doc updates)
-    - `src/edits.asm` (AC3 — 4 NORMAL-mode callsite removals + DEFW removal)
+    - `src/edits.asm` (AC3 — 4 NORMAL-mode callsite removals + DEFW removal + Q6 Option B comment amendment)
     - `_bmad-output/implementation-artifacts/deferred-work.md` (AC9 — 5 closure annotations)
     - `_bmad-output/implementation-artifacts/4-5-visual-op-refactor-and-dead-code-sweep.md` (this file — Dev Agent Record filled in)
     - `_bmad-output/implementation-artifacts/sprint-status.yaml` (status update)
-  - [ ] 9.2 Commit message: `Story 4.5: visual-op refactor + dead-code sweep — closes
-    L461/L462/L472/L425/L254 (~-34 B)`.
-  - [ ] 9.3 Update sprint-status.yaml: `4-5-visual-op-refactor-and-dead-code-sweep` from
-    `ready-for-dev` to `review` post-dev; to `done` after Ant accepts (no hardware UAT
-    cycle required per AC8 — the headless `make test` PASS-preservation + NFR18 SHA-stable
-    + AC5 negative-delta are the binding signals).
+  - [ ] 9.2 Commit message (pending Ant): `Story 4.5: visual-op refactor + dead-code sweep — closes L461/L462/L472/L425/L254 (~-34 B)`.
+  - [x] 9.3 Updated sprint-status.yaml: `4-5-visual-op-refactor-and-dead-code-sweep` flipped from `ready-for-dev` to `in-progress` at dev start, then to `review` at dev completion. Will flip to `done` after Ant accepts (no hardware UAT cycle required per AC8 — the headless `make test` PASS-preservation + NFR18 SHA-stable + AC5 negative-delta are the binding signals).
 
-## Dev Notes
+### Review Findings
+
+Code review pass 2026-05-19 (bmad-code-review, 3 parallel layers: Blind Hunter / Edge Case Hunter / Acceptance Auditor).
+
+Summary: 0 decision-needed, 3 patch, 0 defer, 7 dismissed (5 Blind Hunter concerns closed on verification, 1 Blind asymmetry observation by-design, 1 Edge Hunter prose-clarity false positive). Auditor: all 9 ACs satisfied. No HIGH/MEDIUM behavioural issues.
+
+All 3 patch items are stale doc-comment drift — module-private cell enumerations and `Trashes:` contracts that still list `edits_indent_undo_end` after AC3 retired the cell. No behaviour impact; build is clean (sjasmplus only validates symbol references in instructions, not in comments).
+
+- [x] [Review][Patch] Stale `_end` in module-private cell enumeration [src/visual.asm:246-247] — drop `_end` from the "five Story-2.11/2.13 edits_indent_* cells" list (now four cells: `_start / _walk_mode / _walk_dirty / _walk_end`); update count "five" → "four". **Applied 2026-05-19.**
+- [x] [Review][Patch] Stale `_end` in `visual_apply_shift` Trashes contract [src/visual.asm:459-460] — drop `_end` from `edits_indent_undo_start / _end` in the Trashes enumeration. **Applied 2026-05-19.**
+- [x] [Review][Patch] Stale `_end` in second `visual_apply_shift` header Trashes contract [src/visual.asm:1430-1431] — same drop as above (duplicate header copy on the alternate entry). **Applied 2026-05-19.**
+
 
 ### Architecture compliance
 
@@ -532,30 +481,51 @@ precisely).
 
 ### Agent Model Used
 
-(to be filled in by dev pass — e.g. `claude-opus-4-7[1m]`)
+`claude-opus-4-7[1m]` (Dev / Opus 4.7 1M-context, bmad-dev-story skill).
 
 ### Debug Log References
 
-(to be filled in by dev pass)
+No live debug sessions — refactor was straightforward verbatim execution of AC patterns. Single deviation from spec text noted at Task 1.1 (insertion point: the "last code label" referenced as `_visual_op_block_cursor_clamp` is actually `_visual_compose_finish` — helper placed at the natural code/data boundary at end of file instead). Single deviation from spec at Task 2.2 (the "cross-arm reuse comment at line 989-996" called out by the story doesn't exist as a discrete comment block in current source; rename was self-documenting via the new name).
 
 ### Completion Notes List
 
-(to be filled in by dev pass; required entries:)
-- Pre-4.5 `vibe.com` SHA-256 (the reference SHA the post-4.5 SHA WILL differ from)
-- Post-4.5 `vibe.com` SHA-256 × 2 (must match each other — NFR18 invariant)
-- `make sizes` pre and post (expected delta: -34 B ± 4 B)
-- `make test` PASS/FAIL count pre and post (expected delta: 0 in both directions)
-- Confirmation that AC4 was annotation-only (no production code touched for L254)
-- Surviving references to removed symbols — should be ZERO:
-  - `grep -rnE 'edits_indent_undo_end' src/ inc/ test/` → 0 hits
-  - `grep -rnE 'visual_op_block_yank_ok' src/ inc/ test/` → 0 hits
+- **Pre-4.5 baseline (post-4.4):**
+  - `make sizes` = **8602 B** / ~84% of NFR9 / 1638 B headroom (matches story's "4.4 landed" scenario projection of 8597-8601 ± 4 B).
+  - `sha256sum vibe.com` = `0893765a1276efa38c8c014195eb52a674931e9fb70dec9c88fcdc4c490723e0` (matches sprint-status.yaml's recorded post-4.4 SHA).
+  - `make test` = **283 pass / 1 fail** (`harness_fail.asm` is intentional — see test/cases/harness_fail.asm header: "Demo case — always fails with a specific code so the harness's fail-detection path is exercised").
+- **Post-4.5:**
+  - `make sizes` = **8568 B** / ~83% of NFR9 / **1672 B headroom** (+34 B headroom restored).
+  - `sha256sum vibe.com` × 2 (across `make clean && make all` cycles) = `3f36a583d9b0b2e3ddd423bb6447568b19982c650ff25a1d79e36bc0119cd034` byte-identical (NFR18 invariant held).
+  - `make test` = **283 pass / 1 fail** — identical to pre-4.5 baseline (the 1 fail is `harness_fail`, unchanged).
+- **Delta arithmetic (matches AC5 projection exactly):**
+  - AC1 helper extraction: -7 B (verified mid-implementation; matches AC1 expected sub-delta).
+  - AC2 rename: 0 B (verified mid-implementation; matches AC2 expected delta).
+  - AC3 dead-store cleanup: -27 B (verified mid-implementation; matches AC3 expected sub-delta).
+  - AC4 stale-entry annotation: 0 B (doc-only, no production code touched).
+  - **Cumulative: -34 B exactly** (no sjasmplus alignment slack consumed — the projected ±4 B drift didn't materialise).
+- **AC4 confirmation:** L254 (is_word_char `OR 1`) annotated as already-closed pre-Story-4.5 per AC4 doc-only mandate. Verified at pre-flight Task 0.2: `src/motions.asm:793` contains `OR A` (1 byte) with in-code attribution at line 796 (`; 1 byte vs the prior OR 1.`). The byte saving landed before Story 4.5 was scoped. **Zero production code changed in `src/motions.asm` during this story.**
+- **Surviving references to removed symbols:**
+  - `grep -rnE 'edits_indent_undo_end' src/ inc/ test/` → 1 hit (`src/edits.asm:2411` — historical comment in `edits_record_walk`'s Q6 Option B explanation, amended to say "formerly edits_indent_undo_end, retired in Story 4.5 AC3"). NOT a live reference; sjasmplus builds clean. ZERO live callsites surviving.
+  - `grep -rnE 'visual_op_block_yank_ok' src/ inc/ test/` → 0 hits ✅.
+- **NFR9 budget arithmetic update for memory:** post-4.4 [[project_nfr9_cliff_edge]] memory recorded "8179 B baseline, ~2060 B headroom" — that's stale; latest post-4.4 baseline was 8602 B (after the 4.4 → review patches landed). Post-4.5 is 8568 B / 1672 B headroom. The cliff-edge framing still applies (we're 14 B below the 8554 B "post-3.8 baseline" of the original cliff projection, but well above the 10240 B ceiling).
+- **Hardware UAT NOT required per AC8.** Binding acceptance signals all confirmed: `make test` PASS-preservation (delta = 0) + NFR18 SHA-stable across two clean builds + AC5 negative-delta confirmed at -34 B.
 
 ### File List
 
-(to be filled in by dev pass; expected fileset per Task 9.1)
+**Modified:**
+- `src/visual.asm` — AC1 helper body added (between ASSERT at line 2150 and Module-local data section header at line 2153) + AC1 callsites updated at three locations (BLOCK-arm refusal at lines 1104-1107, CHAR/LINE-arm refusal at 1348-1351, `.yank_only_ok` refusal at 1373-1376) + AC2 rename of `visual_op_block_yank_ok` → `visual_op_yank_ok` at 13 references + AC2 AR23 header comment block + DEFB declaration moved from "BLOCK arm scratch" group to "CHAR/LINE/BLOCK shared" group + AC3 visual-mode dead-store removal at `visual_apply_shift.vsh_walk_end` (lines 1472-1481 → comment condensed + 3-line `EX/LD/EX` block dropped).
+- `src/edits.asm` — AC3 dead-store removal at 4 NORMAL-mode callsites (`op_compose_indent.ci_walk` ~1707, `op_compose_dedent.cdd_walk` ~1776, `op_indent_line` ~1832, `op_dedent_line` ~1882) + AC3 DEFW removal at `edits_indent_undo_end:` (was line 2469) + AC3 amendment of `edits_record_walk`'s AR23 docstring Q6 Option B explanation to note the cell's retirement.
+- `_bmad-output/implementation-artifacts/deferred-work.md` — AC9 closure sub-bullets added at 5 entries (L258 is_word_char / L430 Story 2.13 dev edits_indent_undo_end / L466 three duplicated tails / L467 yank_ok rename / L477 Story 3.7 review edits_indent_undo_end). Current line numbers; story spec's L254/L425/L461/L462/L472 numbering is stable-as-of-story-scoping.
+- `_bmad-output/implementation-artifacts/4-5-visual-op-refactor-and-dead-code-sweep.md` — this file. Status flipped to `review`. Tasks/Subtasks checkboxes marked complete. Dev Agent Record + Completion Notes + File List + Change Log filled.
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` — `4-5-visual-op-refactor-and-dead-code-sweep` status flipped `ready-for-dev` → `in-progress` (at dev start) → `review` (at dev completion).
+
+**New files:** none.
+
+**Renamed files:** none (the cell rename is in-file).
 
 ## Change Log
 
 | Date       | Author | Change                                                                       |
 |------------|--------|------------------------------------------------------------------------------|
 | 2026-05-19 | Amelia | Story 4.5 scoped from Theme D of `deferred-work-triage-2026-05-19.md`. Closes deferred entries L461 / L462 / L472 / L425 (4 active) + L254 (already-closed annotation). Pre-flight cross-check caught 2 stale triage entries: corrected line numbers for the duplicated-tails (1104/1348/1373 vs triaged 920/1068/1093) and the is_word_char `OR 1` byte (already saved per motions.asm:778). Projected delta -34 B ± 4 B. Ready for dev. |
+| 2026-05-19 | Dev (Opus 4.7 1M) | Story 4.5 dev pass complete (single execution, zero rework cycles). All 4 ACs landed: AC1 helper extraction -7 B, AC2 rename 0 B, AC3 dead-store cleanup -27 B, AC4 annotation 0 B. **Cumulative -34 B exactly** (8602 → 8568 B; ~1672 B headroom). NFR18 SHA `3f36a583...` byte-identical × 2 builds (was `0893765a...` pre-4.5). `make test` 283 PASS / 1 deliberate-fail unchanged (no regressions, no new tests per AC7). Two spec-text deviations noted (Task 1.1 helper insertion point at actual last code label; Task 2.2 cross-arm comment block didn't exist as a discrete entity) — both reconciled in the task narratives. AC8 hardware UAT explicitly waived per the spec (refactor with no observable behaviour change; binding signals all green). Status flipped → `review`. Single commit pending Ant. |
