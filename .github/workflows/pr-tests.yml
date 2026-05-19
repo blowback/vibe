@@ -1,0 +1,72 @@
+name: PR tests
+
+on:
+  pull_request:
+    branches: [main]
+
+# Cancel in-flight runs on a PR when a new commit is pushed to it —
+# only the latest commit's test result matters.
+concurrency:
+  group: pr-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # --- sjasmplus 1.23.0 (exact version pinned) ---
+      # Cache key matches the release workflow so the two share a warmed
+      # cache.
+      - name: Cache sjasmplus
+        id: cache-sjasmplus
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/sjasmplus
+          key: sjasmplus-v1.23.0-${{ runner.os }}
+
+      - name: Build sjasmplus 1.23.0
+        if: steps.cache-sjasmplus.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v1.23.0 https://github.com/z00m128/sjasmplus.git /tmp/sjasmplus
+          make -C /tmp/sjasmplus -j"$(nproc)"
+          mkdir -p ~/.local/sjasmplus/bin
+          cp /tmp/sjasmplus/sjasmplus ~/.local/sjasmplus/bin/
+
+      - name: Put sjasmplus on PATH
+        run: echo "$HOME/.local/sjasmplus/bin" >> "$GITHUB_PATH"
+
+      # --- iz-cpm (test harness emulator) ---
+      # Cache key matches the release workflow.
+      - name: Cache iz-cpm
+        id: cache-iz-cpm
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/iz-cpm
+          key: iz-cpm-main-${{ runner.os }}-v1
+
+      - name: Build iz-cpm
+        if: steps.cache-iz-cpm.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/ivanizag/iz-cpm.git /tmp/iz-cpm
+          cd /tmp/iz-cpm
+          cargo build --release
+          mkdir -p ~/.local/iz-cpm/bin
+          cp target/release/iz-cpm ~/.local/iz-cpm/bin/
+
+      - name: Put iz-cpm on PATH
+        run: echo "$HOME/.local/iz-cpm/bin" >> "$GITHUB_PATH"
+
+      # --- VIBE build + tests ---
+      - name: Build vibe.com
+        run: make
+
+      - name: Print size budget
+        run: make sizes
+
+      - name: Run tests
+        run: make test

@@ -1,0 +1,92 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write  # required to create releases and upload assets
+
+concurrency:
+  group: build-and-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # --- sjasmplus 1.23.0 (exact version pinned) ---
+      - name: Cache sjasmplus
+        id: cache-sjasmplus
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/sjasmplus
+          key: sjasmplus-v1.23.0-${{ runner.os }}
+
+      - name: Build sjasmplus 1.23.0
+        if: steps.cache-sjasmplus.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v1.23.0 https://github.com/z00m128/sjasmplus.git /tmp/sjasmplus
+          make -C /tmp/sjasmplus -j"$(nproc)"
+          mkdir -p ~/.local/sjasmplus/bin
+          cp /tmp/sjasmplus/sjasmplus ~/.local/sjasmplus/bin/
+
+      - name: Put sjasmplus on PATH
+        run: echo "$HOME/.local/sjasmplus/bin" >> "$GITHUB_PATH"
+
+      # --- iz-cpm (test harness emulator) ---
+      # No upstream version pin available; cache key is bumpable via the
+      # trailing -vN suffix if the iz-cpm main branch moves and we want
+      # to pick up the new code.
+      - name: Cache iz-cpm
+        id: cache-iz-cpm
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/iz-cpm
+          key: iz-cpm-main-${{ runner.os }}-v1
+
+      - name: Build iz-cpm
+        if: steps.cache-iz-cpm.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/ivanizag/iz-cpm.git /tmp/iz-cpm
+          cd /tmp/iz-cpm
+          cargo build --release
+          mkdir -p ~/.local/iz-cpm/bin
+          cp target/release/iz-cpm ~/.local/iz-cpm/bin/
+
+      - name: Put iz-cpm on PATH
+        run: echo "$HOME/.local/iz-cpm/bin" >> "$GITHUB_PATH"
+
+      # --- VIBE build + tests ---
+      - name: Build vibe.com
+        run: make
+
+      - name: Print size budget
+        run: make sizes
+
+      - name: Run tests
+        run: make test
+
+      # --- Release ---
+      - name: Compute release tag and name
+        id: meta
+        run: |
+          DATE=$(date -u +%Y.%m.%d)
+          SHA=$(git rev-parse --short=7 HEAD)
+          echo "tag=v${DATE}-${SHA}" >> "$GITHUB_OUTPUT"
+          echo "name=VIBE ${DATE} (${SHA})" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
+          files: vibe.com
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          make_latest: "true"

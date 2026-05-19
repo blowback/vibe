@@ -1,6 +1,6 @@
 # VIBE
 
-A vi-style modal text editor for the Feersum MicroBeast (Z80, CP/M 2.2, 80×24 terminal). Single buffer, single-level undo, ~10 KB. Not a vi clone — see [Vi deviations](#vi-deviations) for what's different.
+A vi-style modal text editor for the Feersum MicroBeast (Z80, CP/M 2.2, 80×24 terminal). Single buffer, single-level undo, ~10 KB. Not *precisely* a vi clone — see [Vi deviations](#vi-deviations) for what's different.
 
 ![VIBE logo](images/vibe_logo3.png)
 
