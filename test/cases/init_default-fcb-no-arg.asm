@@ -37,6 +37,10 @@
 ;   0xE5 — status_buffer[0] != ' ' (msg_mode_normal didn't fire,
 ;                                   or status_set_message broken)
 ;   0xE6 — status_dirty != 1
+;   0x9B — welcome_active != 1 (Story 4.2 AC1 — the no-arg path
+;                               must arm the FR53 welcome flag;
+;                               reuses T1's sentinel since the
+;                               assertion semantic is identical)
 ;   B    — diagnostic byte (value where applicable)
 ; ============================================================
 
@@ -133,6 +137,18 @@
     LD      A, 0xE6
     JP      test_fail
 .ok_dirty:
+
+    ;; --- Subtest 6: welcome_active == 1 (Story 4.2 AC1) ---
+    ;; The no-arg short-circuit now arms the FR53 welcome flag
+    ;; alongside the msg_mode_normal status seed. Verify the
+    ;; flag survived fileio_load_initial's RET.
+    LD      A, (welcome_active)
+    CP      1
+    JR      Z, .ok_welcome
+    LD      B, A
+    LD      A, 0x9B
+    JP      test_fail
+.ok_welcome:
 
     JP      test_pass
 

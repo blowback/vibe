@@ -10,7 +10,8 @@
 ;   Small state:    mode_byte, visual_submode, buffer_dirty,
 ;                   pending_operator, yank_kind, status_dirty,
 ;                   pending_motion_prefix, pending_motion_inclusive,
-;                   command_submode, input_held_byte, input_held_flag
+;                   command_submode, input_held_byte, input_held_flag,
+;                   welcome_active (Story 4.2 — FR53 one-shot)
 ;   16-bit state:   cursor_offset, gap_start, gap_end,
 ;                   visual_anchor, count_accumulator,
 ;                   yank_length, top_line_offset,
@@ -87,6 +88,19 @@ static_off            =   static_off + 1
 input_held_byte       EQU static_data_base + static_off
 static_off            =   static_off + 1
 input_held_flag       EQU static_data_base + static_off
+static_off            =   static_off + 1
+; welcome_active — 1-byte one-shot flag controlling the FR53 welcome
+; screen on no-argument launch (Story 4.2). Cold-start LDIR zero-fill
+; leaves it at 0. Writer-to-1: src/fileio.asm (fileio_load_initial.no_arg)
+; — the ONLY writer to 1 in the editor's lifetime; sets the flag when
+; `vibe` launches with no filename argument (DEFAULT_FCB+1 == ' ').
+; Writer-to-0: src/vibe.asm (input_loop dismissal hook) — clears the
+; flag on the first keystroke after no-arg launch. Reader: src/init.asm
+; (Stage 6.5 conditional CALL NZ, welcome_paint) and src/vibe.asm
+; (dismissal hook). After dismissal, welcome_active stays 0 for the
+; editor's lifetime — FR53's "not redrawn on any subsequent input"
+; guarantee is structural (init_cold_start runs once per .com launch).
+welcome_active        EQU static_data_base + static_off
 static_off            =   static_off + 1
 
 ;; --- 16-bit state ---

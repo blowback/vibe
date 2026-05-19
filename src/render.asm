@@ -53,6 +53,22 @@
 ;                           ; FR48 / NFR7)
 ;   render_mark_row_dirty   ; A = row (0..23); set the bit
 ;   render_mark_all_dirty   ; set all 24 row bits
+;   render_emit_byte        ; A = byte to BIOS_CONOUT. Promoted
+;                           ; to public surface in Story 4.2
+;                           ; specifically so src/welcome.asm
+;                           ; can drive per-cell banner emission
+;                           ; without violating AR13. Module-
+;                           ; private prior to Story 4.2; no
+;                           ; other production caller still uses
+;                           ; the internal path.
+;   render_emit_goto        ; A = row, C = col; emits ESC Y
+;                           ; row+bias col+bias with clamping.
+;                           ; Promoted alongside render_emit_byte
+;                           ; in Story 4.2 for the same
+;                           ; cross-module welcome.asm caller
+;                           ; (positions the cursor at the start
+;                           ; of each banner row and at the
+;                           ; final ESC Y 0,0 cursor home).
 ;
 ; State owned (read/write):
 ;   shadow_buffer           ; 1920 bytes, mirror of last-emitted

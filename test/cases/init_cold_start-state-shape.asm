@@ -69,6 +69,16 @@
 ;   0xEA — pending_operator  != 0
 ;   0xEB — pending_motion_prefix != 0
 ;   0xEC — count_accumulator != 0 (B = low byte)
+;   0x9C — welcome_active != 1 (Story 4.2 AC1 — Stage 5 must arm
+;                               the FR53 welcome flag on the no-arg
+;                               cold-start path; reuses Story 4.2
+;                               T2's sentinel for "welcome-related
+;                               flag-state failure")
+;   0x9D — shadow_buffer[6*80+1] != 'm' (Story 4.2 AC1 — Stage 6.5
+;                                        welcome_paint must paint
+;                                        banner line 2 into row 6;
+;                                        reuses T3's sentinel for
+;                                        "welcome paint mismatch")
 ;   B    — diagnostic byte (the offending value where applicable)
 ; ============================================================
 
@@ -270,6 +280,35 @@ input_loop:
     JP      test_fail
 .ok_count:
 
+    ;; --- Subtest 13: welcome_active == 1 (Story 4.2 AC1) ---
+    ;; Stage 5 (fileio_load_initial.no_arg, triggered by the
+    ;; DEFAULT_FCB+1=' ' pre-set above) arms the flag; Stage 6.5
+    ;; reads it and calls welcome_paint. The flag stays 1 until
+    ;; the first input_loop keystroke (which this test does not
+    ;; reach — init_cold_start's tail JP to input_loop lands at
+    ;; the local verifier above, not the production loop).
+    LD      A, (welcome_active)
+    CP      1
+    JR      Z, .ok_welcome
+    LD      B, A
+    LD      A, 0x9C
+    JP      test_fail
+.ok_welcome:
+
+    ;; --- Subtest 14: shadow_buffer[6*80+21] == 'm' (banner line 2 at
+    ;; horizontal-center col_start = 21) ---
+    ;; Stage 6.5's welcome_paint painted banner line 2 ("mm    mm
+    ;; mmmmmm   mmmmmm    mmmmmmmm") into internal row 6 starting
+    ;; at col 21 (horizontal-center = (80 - 38) / 2). The cell at
+    ;; (row 6, col 21) holds the first 'm'.
+    LD      A, (shadow_buffer + 6*80 + 21)
+    CP      'm'
+    JR      Z, .ok_shadow_banner
+    LD      B, A
+    LD      A, 0x9D
+    JP      test_fail
+.ok_shadow_banner:
+
     JP      test_pass
 
 ;; ----- MBB_SET_USR_INT stub (no-op for iz-cpm) -----
@@ -305,6 +344,11 @@ test_mbb_set_usr_int:
     INCLUDE "../../src/edits.asm"
     INCLUDE "../../src/visual.asm"
     INCLUDE "../../src/search.asm"     ; Story 2.8: dispatch_normal forward-references edits_*, dispatch_insert table grows, unbound_insert tail-JPs edits_insert_literal
+    ;; Story 4.2: welcome.asm hosts welcome_paint, which init.asm
+    ;; Stage 6.5 invokes when welcome_active is set (no-arg launch).
+    ;; Slotted in AR25 order between visual.asm and exline.asm to
+    ;; match src/vibe.asm's INCLUDE chain at this test's parse time.
+    INCLUDE "../../src/welcome.asm"
     ;; Story 2.3: init.asm Stage 5 now calls fileio_load_initial;
     ;; the exline + fileio modules are pulled in (in AR25 order)
     ;; so the test build resolves cmd_edit / fileio_load_initial

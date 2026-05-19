@@ -11,11 +11,19 @@
 ;
 ; Public:
 ;   input_loop   ; Main input-loop top-of-frame: input_get_key
+;                ; -> welcome-dismissal hook (Story 4.2 / FR53)
 ;                ; -> dispatch_key -> render_diff -> repeat.
-;                ; Re-entered by bdos_error_funnel's JP from
-;                ; src/statusln.asm — the abort path falls
-;                ; back into the loop's top rather than warm-
-;                ; booting (NFR5).
+;                ; The welcome-dismissal hook (between
+;                ; input_get_key and dispatch) is a one-shot
+;                ; PUSH AF / POP AF bracket that clears
+;                ; welcome_active and CALLs render_mark_all_dirty
+;                ; the first time it fires post-no-arg launch;
+;                ; benign no-op for every iteration thereafter.
+;                ; The keystroke itself flows through to
+;                ; dispatch unchanged. Re-entered by
+;                ; bdos_error_funnel's JP from src/statusln.asm —
+;                ; the abort path falls back into the loop's top
+;                ; rather than warm-booting (NFR5).
 ;
 ; State owned (read/write):
 ;   (declared in inc/state.inc; the cold-start path in
@@ -100,13 +108,31 @@
     INCLUDE "gapbuf.asm"
 
 ;; --- Render pipeline (RI1-RI4; render.asm — Story 1.11) ---
-; AR25 order: gapbuf -> render -> dispatch. render.asm owns
-; shadow_buffer, dirty_rows, top_line_offset, and the single
+; AR25 order: gapbuf -> render -> welcome -> dispatch (Story 4.2
+; slotted welcome.asm between render.asm and dispatch.asm so its
+; cross-module CALLs to render_emit_byte / render_emit_goto are
+; backward-resolved by sjasmplus's two-pass model). render.asm
+; owns shadow_buffer, dirty_rows, top_line_offset, and the single
 ; screen-emission path (AR13). `render_init` and `render_full`
 ; are called from init.asm's cold-start (Story 1.12);
 ; `render_diff` is called from the input loop body (this story);
 ; the Ctrl-L handler in dispatch.asm tail-JPs to render_full.
+; Story 4.2 promoted `render_emit_byte` and `render_emit_goto`
+; to render.asm's Public: surface so welcome.asm can drive them.
     INCLUDE "render.asm"
+
+;; --- Welcome screen (FR53; welcome.asm — Story 4.2) ---
+; AR25 order: render -> welcome -> dispatch. welcome.asm owns the
+; FR53 banner asset (~222 B RLE-encoded `welcome_banner_rle`) and
+; the `welcome_paint` decoder that paints the banner over the
+; editing area on no-argument launch. `welcome_paint` is called
+; from init.asm's Stage 6.5 (CALL NZ, welcome_paint) gated by
+; the welcome_active flag that fileio_load_initial.no_arg arms
+; (Story 4.2 AC1). welcome.asm's only cross-module CALLs are to
+; render_emit_byte / render_emit_goto in render.asm (both
+; promoted to render.asm Public: in this story); both symbols
+; resolve backward via the AR25 chain placement here.
+    INCLUDE "welcome.asm"
 
 ;; --- Mode dispatcher (MC3; dispatch.asm — Story 1.9 / 2.1) ---
 ; AR25 order: render -> dispatch -> parser. Production callers
@@ -225,6 +251,37 @@ input_loop:
     ;; 1. Get next keystroke. RI5 disambig (Esc / arrow,
     ;;    ~40 ms tick window) is internal to input_get_key.
     CALL    input_get_key
+
+    ;; 1.5. Welcome-screen dismissal hook (Story 4.2 / FR53).
+    ;; One-shot: welcome_active is set to 1 ONLY by
+    ;; fileio_load_initial.no_arg at cold-start (no-arg launch),
+    ;; and init_cold_start runs once per .com launch — so this
+    ;; hook fires at most once for the editor's lifetime. PUSH AF
+    ;; / POP AF brackets the welcome_active store + the
+    ;; render_mark_all_dirty call so the key byte in A is
+    ;; preserved across the side effects. After dismissal, the
+    ;; subsequent dispatch_key handles the keystroke per its
+    ;; mode contract (FR50 unbound-key for Esc, MODE_INSERT for
+    ;; `i`, etc.) and the trailing render_diff in step 4 walks
+    ;; every now-dirty editable row, finds shadow holds banner
+    ;; glyphs and the empty buffer's target byte is 0x20, and
+    ;; emits spaces over each banner cell — restoring the blank
+    ;; editing area (FR47-compliant diff path; same machinery
+    ;; that runs on `:e largefile.txt` or any bulk-mutation
+    ;; render). welcome_active stays 0 for the editor's lifetime
+    ;; after the first keystroke even if the buffer returns to
+    ;; file_length=0 (e.g. via `dd` on a 1-line buffer or
+    ;; `:e empty.txt`) — FR53's "not redrawn on any subsequent
+    ;; input" guarantee is structural (no second writer-to-1).
+    PUSH    AF
+    LD      A, (welcome_active)
+    OR      A
+    JR      Z, .no_welcome
+    XOR     A
+    LD      (welcome_active), A
+    CALL    render_mark_all_dirty
+.no_welcome:
+    POP     AF
 
     ;; 2. Per-mode dispatch-table demultiplex. A holds the key;
     ;;    save it in C across the mode_byte read (which clobbers

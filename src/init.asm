@@ -149,6 +149,9 @@
 ;   src/fileio.asm   (fileio_load_initial — Story 2.3 Stage 5
 ;                     launch-with-filename entry; replaces the
 ;                     Story-1.12 msg_mode_normal seed)
+;   src/welcome.asm  (welcome_paint — Story 4.2 Stage 6.5 entry;
+;                     conditionally invoked when welcome_active
+;                     is set by fileio_load_initial.no_arg)
 ;   src/vibe.asm     (input_loop — fall-through target; this
 ;                     story rewrites input_loop's body)
 ; ============================================================
@@ -251,6 +254,18 @@ static_block_size       EQU static_end - static_data_base
 ;      emits any bytes for the editing area; the status row
 ;      emit fires because Stage 5 set status_dirty).
 ;
+;   Stage 6.5: If welcome_active is set (no-arg launch armed it
+;      at Stage 5 via fileio_load_initial.no_arg), CALL welcome_paint
+;      to overlay the FR53 VIBE banner on the just-cleared editing
+;      area. The paint routine emits banner glyphs to screen AND
+;      writes them to shadow_buffer in lock-step, so the
+;      first-keystroke dismissal (input_loop hook → mark all
+;      editable dirty → render_diff) produces a proper shadow-to-
+;      target diff that emits spaces over every banner cell. On
+;      non-no-arg paths welcome_active stays 0 and the conditional
+;      CALL NZ short-circuits — zero observable effect for
+;      launch-with-filename. Story 4.2.
+;
 ;   Stage 7: Fall through to input_loop. MUST be a JP, not a
 ;      CALL: init_cold_start consumed its own stack discipline
 ;      at .com entry; init_teardown's BDOS gateway expansion
@@ -334,6 +349,23 @@ init_cold_start:
 
     ;; --- Stage 6: initial full redraw ---
     CALL    render_full
+
+    ;; --- Stage 6.5: paint welcome banner if no-arg launch (Story 4.2 / FR53) ---
+    ;; fileio_load_initial.no_arg (Stage 5) set welcome_active = 1 on a
+    ;; bare `vibe` launch. welcome_paint paints the FR53 banner over
+    ;; the (just-cleared) empty editing area and writes the banner
+    ;; glyphs to shadow_buffer in lock-step, so the first-keystroke
+    ;; dismissal hook in src/vibe.asm's input_loop produces a proper
+    ;; render_mark_all_dirty + render_diff cycle that emits spaces
+    ;; over every banner cell. welcome_active stays 0 on every other
+    ;; Stage-5 path (load-success, new-file, too-large, read-error)
+    ;; — the conditional CALL NZ short-circuits and Stage 7 falls
+    ;; through directly. AR13: welcome_paint emits via render's
+    ;; render_emit_byte / render_emit_goto (single screen-emission
+    ;; path preserved).
+    LD      A, (welcome_active)
+    OR      A
+    CALL    NZ, welcome_paint
 
     ;; --- Stage 7: fall through to the main input loop ---
     JP      input_loop

@@ -855,6 +855,12 @@ fileio_strip_leading_spaces:
 ;   - no-arg     (DEFAULT_FCB + 1 == ' '):
 ;                 seed status with msg_mode_normal — preserves
 ;                 Story-1.12's Stage-5 banner; buffer untouched.
+;                 Story 4.2 / FR53: ALSO writes welcome_active = 1
+;                 to arm the FR53 welcome screen (init_cold_start
+;                 Stage 6.5 reads the flag and conditionally calls
+;                 welcome_paint). Sole writer-to-1 in the editor's
+;                 lifetime; the first keystroke in input_loop
+;                 clears the flag.
 ;   - load-success:
 ;                 fall through to fileio_load_after_open (shared
 ;                 with :e); status = "<FILENAME> N bytes"; cursor=0.
@@ -946,6 +952,19 @@ fileio_load_initial:
     ;; No filename argument — seed status row with msg_mode_normal
     ;; (empty banner, padded to STATUS_LINE_WIDTH). Buffer empty
     ;; from init Stage 3; filename_buffer zero from Stage 1 LDIR.
+    ;;
+    ;; Story 4.2 / FR53: arm the welcome screen. welcome_active is
+    ;; the one-shot flag init_cold_start Stage 6.5 reads to decide
+    ;; whether to CALL welcome_paint after Stage 6's render_full.
+    ;; This is the SOLE writer-to-1 of welcome_active in the
+    ;; editor's lifetime; init_cold_start runs once per .com launch,
+    ;; and only this `.no_arg` branch arms the flag. The first
+    ;; keystroke in src/vibe.asm's input_loop clears it. After
+    ;; dismissal, the flag stays 0 even if the buffer returns to
+    ;; file_length=0 (e.g. via `dd` or `:e empty.txt`) — FR53's
+    ;; "not redrawn on any subsequent input" guarantee is structural.
+    LD      A, 1
+    LD      (welcome_active), A
     LD      HL, msg_mode_normal
     XOR     A
     JP      status_set_message          ; tail-JP
