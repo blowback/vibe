@@ -577,7 +577,11 @@ motion_k:
 ;          *** DE-TRASH IS LOAD-BEARING: callers in a walker that
 ;          need DE preserved across this CALL MUST PUSH DE /
 ;          POP DE around the call site. See module header
-;          DE-TRASH-invariant block for the 5+ instance history. ***
+;          DE-TRASH-invariant block for the 5+ instance history.
+;          Exception: a caller whose body never reads DE between
+;          the CALL and any subsequent point that observes DE may
+;          safely omit bracketing — see _visual_op_block_cursor_clamp
+;          (visual.asm) for the in-tree precedent. ***
 ; Calls:   (none).
 ; ----------------------------------------------------------------
 motion_byte_at_logical:

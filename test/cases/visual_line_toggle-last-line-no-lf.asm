@@ -8,9 +8,11 @@
 ;          submode=VIS_LINE, visual_anchor=4 (line 2 line-start),
 ;          cursor=6 (last byte of line 2). CALL visual_apply_case_toggle
 ;          A='~'. The LINE arm promotes the selection to whole line 2:
-;          range_start=4, motion_find_line_end(4)→CF=1 HL=6 (last
-;          line, no LF), range_end=HL=6 (not HL+1), BC=3, bytes 4..6
-;          toggle "def"→"DEF". file_length unchanged at 7. cursor at 4.
+;          range_start=4, motion_find_line_end(4)→CF=1 HL=7 (=
+;          file_length per the no-LF contract), range_end=HL=7 (not
+;          HL+1 — CF=1 path skips the INC HL that would consume an
+;          LF), BC = range_end - range_start = 3, bytes 4..6 toggle
+;          "def"→"DEF". file_length unchanged at 7. cursor at 4.
 ;
 ; Sentinel 0x8B — context byte:
 ;   0 — mode_byte != MODE_NORMAL
