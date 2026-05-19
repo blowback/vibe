@@ -43,6 +43,28 @@
 ;          need to save/restore count to a cell — wasted cycles in
 ;          the hot motion path.
 ;
+;          DE-TRASH invariant — the FOOTGUN-PINNING parallel to
+;          BC-preservation: motion_byte_at_logical **TRASHES DE**
+;          across its body (writes gap_start, GAP_BUFFER_MAX,
+;          gap_end, and intermediate compute results into DE).
+;          Callers in a walker pattern that need DE preserved
+;          across the call MUST bracket the CALL with PUSH DE /
+;          POP DE. Five+ instances of this footgun bit during
+;          development:
+;            - Story 2.6: motion_dollar (PUSH/POP DE bracket).
+;            - Story 2.6: motion_find_line_n (PUSH/POP DE bracket).
+;            - Story 3.4: visual_count_lines (+8 B over spec for
+;                         the bracketing).
+;            - Story 3.5: visual_count_block_dims (third instance —
+;                         +13 B over spec).
+;            - Story 4.1: _visual_op_block_cursor_clamp does NOT
+;                         need bracketing (helper body uses only
+;                         HL — DE-trash by the callee does not leak
+;                         across the call to break its contract).
+;                         Documented here as the pattern reference
+;                         for the next walker author.
+;          Origin: Epic 3 retrospective action A2 (2026-05-19).
+;
 ; Public:
 ;   motion_h        ; cursor_offset -= 1 (BOF + line-start clamp)
 ;   motion_j        ; cursor moves down one line (column-preserving)
@@ -552,6 +574,10 @@ motion_k:
 ;          CF = 1 (A undefined) if HL >= file_length (past-EOF).
 ;          HL preserved on every path.
 ; Trashes: A, DE, F.
+;          *** DE-TRASH IS LOAD-BEARING: callers in a walker that
+;          need DE preserved across this CALL MUST PUSH DE /
+;          POP DE around the call site. See module header
+;          DE-TRASH-invariant block for the 5+ instance history. ***
 ; Calls:   (none).
 ; ----------------------------------------------------------------
 motion_byte_at_logical:

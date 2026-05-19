@@ -886,6 +886,11 @@ _visual_op_line_arm:
 ; col_max+1; full rect width (col_max - col_min + 1) otherwise).
 ; The KIND_BLOCK yank format (AC9) is rows joined by LF separators
 ; with no trailing LF; empty rows still emit a separator LF.
+;
+; Calls: _visual_op_block_project_rect (rect projection),
+;        _visual_op_block_row_bytes (per-row clipping),
+;        _visual_op_block_cursor_clamp (Story 4.1 AC2/AC3 — replaces
+;        the inline single-step DEC HL clamp at .b_have_cursor).
 ; ----------------------------------------------------------------
 _visual_op_block_arm:
     ;; Project rectangle + compute col_min / col_max / top_ls via
@@ -1068,26 +1073,18 @@ _visual_op_block_arm:
     LD      HL, (visual_op_block_top_ls)
     LD      DE, (visual_op_block_col_min)
     ADD     HL, DE
-    LD      (cursor_offset), HL
 
     ;; BH3 jagged-top clamp: when the top row of the bounding rectangle
     ;; is SHORTER than col_min (jagged left edge on the top row), the
     ;; raw top_ls+col_min offset lands past that row's LF (or past EOF
-    ;; if the top row is also the no-trailing-LF last line). Mirror
-    ;; KIND_CHAR's x-style clamp: DEC if past EOF or on a LF. Applies
-    ;; to all three operators (y/d/c) — for d/c the offset post-delete
-    ;; can still land on the trailing LF of a now-empty top row.
-    LD      A, H
-    OR      L
-    JR      Z, .b_have_cursor               ; cursor == 0: no clamp possible
-    CALL    motion_byte_at_logical          ; HL preserved
-    JR      C, .b_cursor_clamp              ; past EOF → clamp back
-    CP      0x0A
-    JR      NZ, .b_have_cursor              ; real byte → leave
-.b_cursor_clamp:
-    DEC     HL
-    LD      (cursor_offset), HL
-.b_have_cursor:
+    ;; if the top row is also the no-trailing-LF last line). Walk back
+    ;; via _visual_op_block_cursor_clamp (Story 4.1 AC2 — loop, not the
+    ;; original single-step DEC HL; AC3 Option A removed the obsolete
+    ;; `OR L; JR Z` cursor==0 shortcut — subsumed by the helper's HL==0
+    ;; underflow guard). Applies to all three operators (y/d/c) — for
+    ;; d/c the offset post-delete can still land on the trailing LF of
+    ;; a now-empty top row.
+    CALL    _visual_op_block_cursor_clamp   ; writes (cursor_offset)
 
     ;; Dispatch on operator
     LD      A, (visual_op_pending)
@@ -1138,6 +1135,44 @@ _visual_op_block_row_bytes:
     SBC     HL, DE                          ; HL = end - col_min; CF=1 if end < col_min
     RET     NC                              ; HL = bytes_this_row (>= 0)
     LD      HL, 0                           ; end < col_min → bytes_this_row = 0
+    RET
+
+
+; ----------------------------------------------------------------
+; _visual_op_block_cursor_clamp  (Story 4.1 AC2/AC3 — shared between
+; Story 3.6 _visual_op_block_arm.b_have_cursor and Story 3.8
+; _visual_op_case_block_arm.b_cursor_clamp; replaces the single-step
+; DEC HL clamp with a motion-walker loop that walks back across
+; jagged-top overshoots of arbitrary distance).
+;
+; Walks HL back one byte at a time while the byte at HL is past EOF
+; or is an LF (0x0A). Stops when HL points at a real in-file byte
+; or when HL reaches 0 (underflow guard per Q3 Option A — subsumes
+; the prior `OR L; JR Z` cursor==0 shortcut per Q4 Option A).
+;
+; Writes the clamped HL back to (cursor_offset).
+;
+; In:      HL = proposed cursor_offset (= top_ls + col_min).
+; Out:     HL = clamped cursor; (cursor_offset) written with HL.
+; Trashes: A, DE, F. Preserves BC. (Q5 Option B: no PUSH/POP DE —
+;          this body never reads DE; motion_byte_at_logical's
+;          DE-trash does not leak across the call.)
+; Calls:   motion_byte_at_logical (HL preserved by callee).
+; ----------------------------------------------------------------
+_visual_op_block_cursor_clamp:
+.loop:
+    LD      A, H
+    OR      L
+    JR      Z, .done                        ; HL = 0 underflow guard
+    CALL    motion_byte_at_logical          ; HL preserved; CF=1 past EOF
+    JR      C, .step_back                   ; past EOF → clamp back
+    CP      0x0A
+    JR      NZ, .done                       ; real byte → leave
+.step_back:
+    DEC     HL
+    JR      .loop
+.done:
+    LD      (cursor_offset), HL
     RET
 
 
@@ -1724,6 +1759,13 @@ _visual_op_case_toggle_finalise:
 ; direct record per Q1 Option A (multi-region undo deferred;
 ; mirrors Story 3.6 BLOCK arm precedent). Cursor at top_ls +
 ; col_min with BH3 jagged-top clamp.
+;
+; Calls: _visual_op_block_project_rect (rect projection),
+;        _visual_op_block_row_bytes (per-row clipping),
+;        gapbuf_case_toggle_range (per-row toggle primitive — with
+;        AC1 file_length=0 guard at Story 4.1),
+;        _visual_op_block_cursor_clamp (Story 4.1 AC2/AC3 — replaces
+;        the inline single-step DEC HL clamp at .b_cursor_clamp).
 ; ----------------------------------------------------------------
 _visual_op_case_block_arm:
     ;; Project rectangle + compute col_min / col_max / top_ls via
@@ -1777,23 +1819,14 @@ _visual_op_case_block_arm:
     JR      NZ, .block_loop                 ; back-loop within JR range (~112 B)
 
     ;; Cursor placement: top_ls + col_min with BH3 jagged-top clamp
-    ;; (inherited verbatim from Story 3.6 _visual_op_block_arm
-    ;; .b_have_cursor — DEC HL if past EOF or on LF).
+    ;; via _visual_op_block_cursor_clamp (Story 4.1 AC2 — loop, not
+    ;; the original single-step DEC HL; AC3 Option A removed the
+    ;; obsolete `OR L; JR Z` cursor==0 shortcut — subsumed by the
+    ;; helper's HL==0 underflow guard).
     LD      HL, (visual_op_block_top_ls)
     LD      DE, (visual_op_block_col_min)
     ADD     HL, DE
-    LD      (cursor_offset), HL
-    LD      A, H
-    OR      L
-    JR      Z, .b_have_cursor               ; cursor == 0 → no clamp possible
-    CALL    motion_byte_at_logical          ; HL preserved
-    JR      C, .b_cursor_clamp              ; past EOF → clamp back
-    CP      0x0A
-    JR      NZ, .b_have_cursor              ; real byte → leave
-.b_cursor_clamp:
-    DEC     HL
-    LD      (cursor_offset), HL
-.b_have_cursor:
+    CALL    _visual_op_block_cursor_clamp   ; writes (cursor_offset)
     CALL    edits_dirty_and_redraw
     JP      enter_normal_mode
 

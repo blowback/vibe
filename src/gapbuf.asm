@@ -26,7 +26,9 @@
 ;   gapbuf_insert            - insert byte at cursor (gap-tracks-cursor)
 ;   gapbuf_delete            - delete byte before cursor
 ;   gapbuf_move_gap          - relocate gap to a target logical offset
-;   gapbuf_case_toggle_range - in-place case-toggle over [HL, HL+BC) (Story 3.8)
+;   gapbuf_case_toggle_range - in-place case-toggle over [HL, HL+BC) (Story 3.8);
+;                              file_length=0 short-circuit added by Story 4.1
+;                              AC1 (closes Story 3.8 caller-bound findings 1+2)
 ;   ; gapbuf_load stub retired by Story 2.2 — the load orchestration
 ;   ; lives in src/fileio.asm; its linear-fill phase takes a
 ;   ; documented AR14 carve-out (writes `gap_start` directly) and
@@ -295,6 +297,15 @@ gapbuf_move_gap:
 ;          selection had no alphabetic content); Z = 0 iff at
 ;          least one byte was toggled.
 ; Trashes: A, BC, DE, HL, F.
+; Guards:  Story 4.1 AC1 — file_length=0 short-circuit at entry
+;          (Z=1 return; no gapbuf_move_gap call; cursor_offset
+;          PRESERVED). Closes Story 3.8 caller-bound findings 1+2:
+;          (1) CHAR arm passing BC=1 on empty buffer would otherwise
+;          XOR-toggle the byte at gap_end (= yank_buffer[0]);
+;          (2) BLOCK arm passing top_ls >= file_length transitively
+;          reaches this primitive only when file_length=0 (since
+;          top_ls < file_length is structurally impossible in a
+;          non-empty buffer).
 ; Calls:   gapbuf_move_gap (× 1; relocates gap to range_start so
 ;          the toggle region becomes physically contiguous at
 ;          gap_end onwards).
@@ -304,6 +315,30 @@ gapbuf_case_toggle_range:
     LD      A, B
     OR      C
     RET     Z
+
+    ;; file_length=0 short-circuit (Story 4.1 AC1; closes Story 3.8
+    ;; caller-bound findings 1+2). Compute file_length explicitly:
+    ;;   file_length = gap_start + GAP_BUFFER_MAX - gap_end
+    ;; (matches motion_byte_at_logical's SR3 math).
+    ;;
+    ;; NB: a naive gap_end == GAP_BUFFER_BASE + GAP_BUFFER_MAX
+    ;; check would false-positive when cursor is at EOF in a
+    ;; non-empty buffer (gap-tracks-cursor puts the gap at EOF
+    ;; with gap_end == buffer top), wrongly rejecting legitimate
+    ;; calls. The explicit file_length=0 test is the unique
+    ;; distinguisher.
+    ;;
+    ;; PUSH/POP HL preserves range_start across the SBC scratch
+    ;; (caller's HL is consumed by gapbuf_move_gap below).
+    PUSH    HL
+    LD      HL, (gap_start)
+    LD      DE, GAP_BUFFER_MAX
+    ADD     HL, DE                      ; HL = gap_start + GAP_BUFFER_MAX
+    LD      DE, (gap_end)
+    OR      A
+    SBC     HL, DE                      ; HL = file_length; Z=1 iff empty
+    POP     HL
+    RET     Z                           ; file_length=0 -> Z=1 (no-op)
 
     ;; Move the gap to the range start. After this, bytes
     ;; [HL, HL+BC) are physically contiguous at gap_end..gap_end+BC.
