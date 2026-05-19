@@ -99,6 +99,12 @@ KIND_BLOCK            EQU 0x02    ; block-wise yank (Epic 3 visual-block; reserv
 ; full indent/dedent undo coverage (with a documented vi-divergence for
 ; dedent of lines that had no leading INDENT_BYTE: replay re-indents them,
 ; producing an extra space; recoverable by manual dedent).
+; Story 3.8 (CASE_TOGGLE) — inverse-op is the SAME op (case-toggle is
+; self-inverse; XOR 0x20 twice = identity); no payload bytes saved; no
+; capacity check; replay calls gapbuf_case_toggle_range over the recorded
+; [position, position+length) range. CHAR/LINE visual `~` use this kind;
+; BLOCK visual `~` records UNDO_KIND_TOO_LARGE direct (multi-region undo
+; deferred).
 UNDO_KIND_EMPTY        EQU 0x00   ; cold-start / post-u consumed — nothing to replay
 UNDO_KIND_INSERT       EQU 0x01   ; inverse-op = delete (insert sessions, paste)
 UNDO_KIND_DELETE       EQU 0x02   ; inverse-op = insert (x, dd, dw, indent)
@@ -106,6 +112,7 @@ UNDO_KIND_REPLACE      EQU 0x03   ; inverse-op = delete-then-insert (cw via two-
 UNDO_KIND_TOO_LARGE    EQU 0x04   ; recorded but exceeds payload capacity — replay refuses
 UNDO_KIND_INDENT_WALK  EQU 0x05   ; inverse-op = dedent walk over [position, position+length)
 UNDO_KIND_DEDENT_WALK  EQU 0x06   ; inverse-op = indent walk over [position, position+length)
+UNDO_KIND_CASE_TOGGLE  EQU 0x07   ; inverse-op = case-toggle re-walk over [position, position+length); self-inverse (Story 3.8)
 UNDO_PAYLOAD_SIZE      EQU UNDO_BUFFER_SIZE   ; alias — self-documenting payload-size refs
 
 ;; --- COMMAND-mode submode discriminator (Story 3.1) ---

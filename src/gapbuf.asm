@@ -3,16 +3,30 @@
 ; Purpose: Gap-buffer primitives. Owns the SR2 two-halves
 ;          invariant and is the single buffer-mutation owner
 ;          (AR14): all edits to the gap buffer enter through
-;          gapbuf_insert / gapbuf_delete / gapbuf_move_gap.
+;          gapbuf_insert / gapbuf_delete / gapbuf_move_gap /
+;          gapbuf_case_toggle_range.
 ;          Pure-memory module — no BDOS, no console emit
 ;          (AR15: gapbuf does not invoke the BDOS entry vector
 ;          or the BDOS macro; AC11 grep enforces).
+;          Story 3.8 — gapbuf_case_toggle_range lands as the
+;          fifth public mutator; preserves AR14 (gapbuf remains
+;          the sole buffer-mutation owner) by introducing an
+;          in-place per-byte mutator that uses gapbuf_move_gap
+;          to relocate the gap to the range start, then walks
+;          the now-contiguous bytes at gap_end onwards toggling
+;          alphabetic case bits in place. Net file_length
+;          UNCHANGED; gap_start / gap_end UNCHANGED net (the
+;          move_gap side-effect is internal to the call —
+;          caller observes invariant gap pointers). Mirrors
+;          visual.asm's call site visual_apply_case_toggle
+;          (Story 3.8 — FR38).
 ;
 ; Public:
-;   gapbuf_init      - reset to empty buffer
-;   gapbuf_insert    - insert byte at cursor (gap-tracks-cursor)
-;   gapbuf_delete    - delete byte before cursor
-;   gapbuf_move_gap  - relocate gap to a target logical offset
+;   gapbuf_init              - reset to empty buffer
+;   gapbuf_insert            - insert byte at cursor (gap-tracks-cursor)
+;   gapbuf_delete            - delete byte before cursor
+;   gapbuf_move_gap          - relocate gap to a target logical offset
+;   gapbuf_case_toggle_range - in-place case-toggle over [HL, HL+BC) (Story 3.8)
 ;   ; gapbuf_load stub retired by Story 2.2 — the load orchestration
 ;   ; lives in src/fileio.asm; its linear-fill phase takes a
 ;   ; documented AR14 carve-out (writes `gap_start` directly) and
@@ -256,8 +270,82 @@ gapbuf_move_gap:
     POP     HL
     RET
 
+; ----------------------------------------------------------------
+; gapbuf_case_toggle_range
+; In-place per-byte alphabetic case toggle (Story 3.8). For each
+; byte in [HL, HL+BC) that is 'A'..'Z' or 'a'..'z', flips bit 5
+; (XOR 0x20). Non-alphabetic bytes (LF / space / digits /
+; punctuation) pass through unchanged. Net file_length is
+; UNCHANGED — the gap is internally relocated to the range start
+; via gapbuf_move_gap so the target bytes become physically
+; contiguous at gap_end onwards, then the walk mutates them in
+; place. AR14 preserves: gapbuf remains the sole buffer-mutation
+; owner. The fifth public mutator after init / insert / delete /
+; move_gap.
+;
+; In:      HL = range_start (logical offset; 0 <= HL <= file_length - BC)
+;          BC = byte count (range_end - range_start; may be 0)
+; Out:     Bytes in [HL, HL+BC) have alpha case toggled in place;
+;          non-alpha bytes unchanged.
+;          gap_start / gap_end UNCHANGED net (gapbuf_move_gap
+;          relocated the gap as a side-effect but no NET
+;          file_length change).
+;          cursor_offset PRESERVED across the call.
+;          Z flag = 1 iff no alpha byte was toggled (no-op walk;
+;          selection had no alphabetic content); Z = 0 iff at
+;          least one byte was toggled.
+; Trashes: A, BC, DE, HL, F.
+; Calls:   gapbuf_move_gap (× 1; relocates gap to range_start so
+;          the toggle region becomes physically contiguous at
+;          gap_end onwards).
+; ----------------------------------------------------------------
+gapbuf_case_toggle_range:
+    ;; 0-byte defensive guard. Empty BC -> Z=1 return (no toggles).
+    LD      A, B
+    OR      C
+    RET     Z
+
+    ;; Move the gap to the range start. After this, bytes
+    ;; [HL, HL+BC) are physically contiguous at gap_end..gap_end+BC.
+    PUSH    BC
+    CALL    gapbuf_move_gap             ; gap relocated; cursor UNCHANGED
+    POP     BC
+
+    ;; Walk bytes from gap_end. HL repurposed as physical pointer.
+    LD      HL, (gap_end)
+    LD      D, 0                        ; D = dirty flag (0 = clean)
+
+.ct_loop:
+    LD      A, (HL)
+    ;; --- Alpha test (inline) ---
+    CP      'A'
+    JR      C, .ct_advance              ; A < 'A' -> not alpha
+    CP      'Z' + 1
+    JR      C, .ct_toggle               ; 'A'..'Z' -> toggle
+    CP      'a'
+    JR      C, .ct_advance              ; '['..'`' -> not alpha
+    CP      'z' + 1
+    JR      NC, .ct_advance             ; A > 'z' -> not alpha
+
+.ct_toggle:
+    XOR     0x20                        ; flip case bit
+    LD      (HL), A
+    LD      D, 1                        ; dirty
+
+.ct_advance:
+    INC     HL
+    DEC     BC
+    LD      A, B
+    OR      C
+    JR      NZ, .ct_loop
+
+    ;; Set Z=0 iff dirty (D=1); Z=1 iff clean (D=0).
+    LD      A, D
+    OR      A
+    RET
+
 ;; ============================================================
 ;; --- Internal helpers ---
 ;; ============================================================
-; (none — the four primitives above are flat enough not to need
+; (none — the five primitives above are flat enough not to need
 ;  helpers. Reserve this section for future growth.)

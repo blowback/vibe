@@ -91,6 +91,37 @@
 ;          visual_apply_operator on every call; valid only
 ;          between entry and the terminal tail-JP.
 ;
+;          Story 3.8 — visual_apply_case_toggle (`~`) lands as
+;          the FINAL Epic-3 visual operator. visual.asm now has
+;          THREE buffer-mutation paths: (1) Story 3.6
+;          `edits_range_delete → gapbuf_delete` for d/y/c
+;          CHAR/LINE arms + per-row in BLOCK; (2) Story 3.7
+;          `edits_indent_walk → gapbuf_insert/gapbuf_delete`
+;          for the line-class shift; (3) Story 3.8 `gapbuf_case_toggle_range`
+;          (in-place per-byte case toggle; no insert / no delete;
+;          gap-pointer-preserving net). AR14 ownership of
+;          gap_start / gap_end REMAINS with gapbuf.asm — visual.asm
+;          contains zero `LD (gap_start),` / `LD (gap_end),`
+;          writes. Story 3.8 is the FIRST DIRECT call from
+;          visual.asm into a gapbuf primitive (Stories 3.6 / 3.7
+;          only had transitive paths via edits.asm). The Story
+;          3.6 visual_op_pending + visual_op_range_start +
+;          visual_op_range_bytes cells + all 9 visual_op_block_*
+;          cells are REUSED by Story 3.8 with the same
+;          one-dispatch lifecycle (no new module-local cells;
+;          NO inc/state.inc changes). UNDO_KIND_CASE_TOGGLE (0x07)
+;          is the new equate sibling to UNDO_KIND_INDENT_WALK /
+;          UNDO_KIND_DEDENT_WALK; CHAR/LINE arms record it on
+;          dirty walks (and PRESERVE prior undo on no-op walks
+;          per Q3 Option A — divergence from Stories 2.11 / 3.7
+;          which pre-clear unconditionally); BLOCK arm records
+;          UNDO_KIND_TOO_LARGE direct per Q1 Option A mirroring
+;          Story 3.6 BLOCK precedent (multi-region undo deferred).
+;          NO status-clobber concern across all four exit paths
+;          (empty / no-op / dirty-CHAR-LINE / BLOCK) —
+;          gapbuf_case_toggle_range has NO insert path so
+;          msg_file_too_large is structurally unreachable.
+;
 ; Public:
 ;   visual_enter_char     ; LANDS Story 3.3 — `v` entry, VIS_CHAR
 ;   visual_enter_line     ; LANDS Story 3.4 — `V` entry, VIS_LINE
@@ -106,8 +137,18 @@
 ;                         ; VIS_LINE / VIS_BLOCK selections; FR37 —
 ;                         ; line-class shift via edits_indent_walk;
 ;                         ; VIS_BLOCK column range IGNORED).
-;                         ; The sibling visual_apply_case_toggle for
-;                         ; ~ (Story 3.8) remains a placeholder.
+;   visual_apply_case_toggle ; LANDS Story 3.8 — (~ on VIS_CHAR /
+;                         ; VIS_LINE / VIS_BLOCK selections; FR38 —
+;                         ; per-byte case toggle via the new
+;                         ; gapbuf_case_toggle_range primitive in
+;                         ; src/gapbuf.asm; VIS_BLOCK column range
+;                         ; RESPECTED with BH3 jagged-line clipping —
+;                         ; mirrors Story 3.6 BLOCK per-row geometry
+;                         ; not Story 3.7's line-class shift).
+;                         ; All six Epic-3 visual operators
+;                         ; (d / y / c / > / < / ~) now land;
+;                         ; the dispatch_visual operator surface is
+;                         ; complete.
 ;
 ;   (visual_cancel is NOT a separate symbol per Q7 pin Option A —
 ;    src/dispatch.asm:enter_normal_mode handles VISUAL→NORMAL
@@ -201,6 +242,16 @@
 ;   _walk_dirty / _walk_end) are also reused by visual_apply_shift
 ;   via the existing edits_indent_walk + edits_record_walk helpers —
 ;   Story 3.7 introduces no new cells in either module.
+;
+;   Story 3.8 reuses the same Story-3.6 cells (visual_op_pending +
+;   visual_op_range_start + visual_op_range_bytes for CHAR/LINE
+;   range stash + all 9 visual_op_block_* cells for BLOCK arm
+;   pass scratch — identical lifecycle and same one-dispatch
+;   ownership). Story 3.8 introduces NO new module-local cells;
+;   visual_op_pending stash is kept for callsite-symmetry per
+;   Q6 Option A even though the operator byte is not consumed
+;   downstream (single-op operator class — `~` is the only
+;   operator that reaches the dispatcher).
 ;
 ; State read-only:
 ;   cursor_offset         ; read by visual_enter_char (anchor pin)
@@ -325,6 +376,57 @@
 ;                enter_normal_mode (tail-JP for `d` / `y`);
 ;                enter_insert_mode (tail-JP for `c`).
 ;
+;   visual_apply_case_toggle:  (Story 3.8 — FR38)
+;       In:      A = '~' (0x7E from MC4 via dispatch_visual; consumed
+;                only by the prologue stash to visual_op_pending per
+;                Q6 Option A — value not consumed downstream because
+;                `~` is a single-op operator class).
+;       Out:     every alphabetic byte in the selection has its case
+;                toggled (XOR 0x20). Non-alpha bytes (LF / space /
+;                digits / punctuation) unchanged. cursor_offset placed
+;                at top-of-selection (range_start for CHAR/LINE;
+;                top_ls + col_min for BLOCK with BH3 jagged-top clamp).
+;                mode_byte = MODE_NORMAL via enter_normal_mode tail-JP.
+;                undo register written per the per-arm contract:
+;                  CHAR / LINE — on dirty walks (≥ 1 alpha byte
+;                                toggled): UNDO_KIND_CASE_TOGGLE
+;                                with (range_start, total_bytes).
+;                                On no-op walks (no alpha bytes):
+;                                PRIOR undo register PRESERVED
+;                                (Q3 Option A — divergence from
+;                                Stories 2.11 / 3.7).
+;                  BLOCK       — UNDO_KIND_TOO_LARGE direct via
+;                                undo_write_header (Q1 Option A;
+;                                multi-region undo deferred; matches
+;                                Story 3.6 BLOCK precedent).
+;                buffer_dirty = 1 + render dirty-rows marked on
+;                the dirty CHAR/LINE path + every BLOCK call.
+;                visual_anchor and visual_submode left AS-IS
+;                (zombie state per Stories 3.3-3.7 precedent).
+;                yank register UNTOUCHED.
+;       Trashes: A, BC, DE, HL, F + module-local cells (visual_op_pending,
+;                visual_op_range_start, visual_op_range_bytes for
+;                CHAR/LINE; all 9 visual_op_block_* cells for BLOCK).
+;       Calls:   motion_find_line_start (CALL × 1 in LINE arm — cursor
+;                projection; anchor projection skipped per Story 3.4
+;                AC2 invariant);
+;                motion_find_line_end (CALL × 1 in LINE arm + per-row
+;                in BLOCK arm);
+;                motion_byte_at_logical (CALL × 1 in BLOCK arm cursor
+;                jagged-top clamp);
+;                visual_count_block_dims (CALL × 1 in BLOCK arm);
+;                _visual_op_block_row_bytes (CALL per-row in BLOCK arm);
+;                gapbuf_case_toggle_range (CALL × 1 in CHAR/LINE shared
+;                finalise; per-row in BLOCK arm — FIRST direct gapbuf
+;                primitive call from visual.asm);
+;                undo_clear (CALL × 1 in dirty-CHAR-LINE path + 1 in
+;                BLOCK pre-record);
+;                undo_write_header (CALL × 1 in dirty-CHAR-LINE path +
+;                1 in BLOCK pre-record);
+;                edits_dirty_and_redraw (CALL × 1 in dirty-CHAR-LINE
+;                path + 1 in BLOCK tail);
+;                enter_normal_mode (JP tail × 4 paths).
+;
 ;   visual_apply_shift:  (Story 3.7 — FR37)
 ;       In:      A = operator byte ('<' | '>' from MC4 via dispatch_visual).
 ;       Out:     every line whose start is in [promoted_start,
@@ -409,7 +511,21 @@
 ;                     undo.asm's "internal helper" comment but is a
 ;                     regular labelled entry with RET — callable from
 ;                     outside; Story 3.6 promotes it to the Public
-;                     block in undo.asm's module header.)
+;                     block in undo.asm's module header.
+;                     Story 3.8 reuses undo_clear + undo_write_header
+;                     for the visual_apply_case_toggle CHAR/LINE dirty
+;                     path (UNDO_KIND_CASE_TOGGLE) and BLOCK arm
+;                     pre-record (UNDO_KIND_TOO_LARGE direct).)
+;   src/gapbuf.asm   (Story 3.8 NEW — gapbuf_case_toggle_range. The
+;                     FIRST DIRECT call from visual.asm into a
+;                     gapbuf primitive (Stories 3.6 / 3.7 only had
+;                     transitive paths via edits.asm). Backward-resolved:
+;                     gapbuf.asm INCLUDEs BEFORE visual.asm per AR25
+;                     chain — gapbuf at slot #2, visual at slot #10
+;                     post-Story-3.3 — so gapbuf_case_toggle_range
+;                     is already defined when visual.asm is parsed.
+;                     No forward-ref challenges introduced by
+;                     Story 3.8.)
 ; ============================================================
 
 ;; ============================================================
@@ -772,45 +888,10 @@ _visual_op_line_arm:
 ; with no trailing LF; empty rows still emit a separator LF.
 ; ----------------------------------------------------------------
 _visual_op_block_arm:
-    ;; Project rectangle via Story-3.5 helper (also fills the 5
-    ;; visual_block_* projection cells we read for col / line-start data).
-    CALL    visual_count_block_dims         ; HL = rows; BC = cols
-    LD      (visual_op_block_rows), HL
-    LD      (visual_op_block_cols), BC
-
-    ;; Compute col_min = min(anchor_col, cursor_col); col_max = max(...)
-    LD      HL, (visual_block_anchor_col)
-    LD      DE, (visual_block_cursor_col)
-    OR      A
-    SBC     HL, DE                          ; HL = anchor_col - cursor_col (signed)
-    JR      C, .acol_lt
-    ;; anchor_col >= cursor_col
-    LD      HL, (visual_block_cursor_col)
-    LD      (visual_op_block_col_min), HL
-    LD      HL, (visual_block_anchor_col)
-    LD      (visual_op_block_col_max), HL
-    JR      .have_cols
-.acol_lt:
-    ;; anchor_col < cursor_col
-    LD      HL, (visual_block_anchor_col)
-    LD      (visual_op_block_col_min), HL
-    LD      HL, (visual_block_cursor_col)
-    LD      (visual_op_block_col_max), HL
-.have_cols:
-
-    ;; Compute top_ls = min(anchor_ls, cursor_ls)
-    LD      HL, (visual_block_anchor_ls)
-    LD      DE, (visual_block_cursor_ls)
-    OR      A
-    SBC     HL, DE                          ; HL = anchor_ls - cursor_ls (signed)
-    JR      C, .anchor_above
-    ;; anchor_ls >= cursor_ls: top_ls = cursor_ls
-    LD      HL, (visual_block_cursor_ls)
-    JR      .have_top
-.anchor_above:
-    LD      HL, (visual_block_anchor_ls)
-.have_top:
-    LD      (visual_op_block_top_ls), HL
+    ;; Project rectangle + compute col_min / col_max / top_ls via
+    ;; shared helper (Story 3.8 — NFR9 shrink-down #3 factor-out;
+    ;; visual_op_block_cols write retired as dead-store).
+    CALL    _visual_op_block_project_rect
 
     ;; --- Pass 1: sum yank bytes (with LF separators) ---
     LD      HL, 0
@@ -1057,6 +1138,64 @@ _visual_op_block_row_bytes:
     SBC     HL, DE                          ; HL = end - col_min; CF=1 if end < col_min
     RET     NC                              ; HL = bytes_this_row (>= 0)
     LD      HL, 0                           ; end < col_min → bytes_this_row = 0
+    RET
+
+
+; ----------------------------------------------------------------
+; _visual_op_block_project_rect  (Story 3.8 — shared between Story 3.6
+; visual_apply_operator BLOCK arm and Story 3.8 visual_apply_case_toggle
+; BLOCK arm; ~56 B saved via the factor-out per NFR9 shrink-down #3).
+; Project the visual rectangle: CALL visual_count_block_dims (fills
+; the 5 visual_block_* projection cells), stash rows, compute
+; col_min / col_max / top_ls via SBC-and-swap, write the three
+; visual_op_block_* cells consumed by both BLOCK arms.
+;
+; In:      (none — reads visual_anchor / cursor_offset transitively
+;          via visual_count_block_dims).
+; Out:     visual_op_block_rows, visual_op_block_col_min,
+;          visual_op_block_col_max, visual_op_block_top_ls all
+;          populated. visual_op_block_cols write deliberately
+;          OMITTED — dead-store per Story 3.6 deferred-work
+;          (no consumer in either arm; saves 4 B in the shared body).
+; Trashes: A, BC, DE, HL, F.
+; Calls:   visual_count_block_dims.
+; ----------------------------------------------------------------
+_visual_op_block_project_rect:
+    CALL    visual_count_block_dims         ; HL = rows; BC = cols (cols discarded)
+    LD      (visual_op_block_rows), HL
+
+    ;; col_min = min(anchor_col, cursor_col); col_max = max(...).
+    LD      HL, (visual_block_anchor_col)
+    LD      DE, (visual_block_cursor_col)
+    OR      A
+    SBC     HL, DE
+    JR      C, .pr_acol_lt
+    ;; anchor_col >= cursor_col: min = cursor_col, max = anchor_col.
+    LD      HL, (visual_block_cursor_col)
+    LD      (visual_op_block_col_min), HL
+    LD      HL, (visual_block_anchor_col)
+    LD      (visual_op_block_col_max), HL
+    JR      .pr_have_cols
+.pr_acol_lt:
+    ;; anchor_col < cursor_col: min = anchor_col, max = cursor_col.
+    LD      HL, (visual_block_anchor_col)
+    LD      (visual_op_block_col_min), HL
+    LD      HL, (visual_block_cursor_col)
+    LD      (visual_op_block_col_max), HL
+.pr_have_cols:
+
+    ;; top_ls = min(anchor_ls, cursor_ls).
+    LD      HL, (visual_block_anchor_ls)
+    LD      DE, (visual_block_cursor_ls)
+    OR      A
+    SBC     HL, DE
+    JR      C, .pr_anchor_above
+    LD      HL, (visual_block_cursor_ls)
+    JR      .pr_have_top
+.pr_anchor_above:
+    LD      HL, (visual_block_anchor_ls)
+.pr_have_top:
+    LD      (visual_op_block_top_ls), HL
     RET
 
 
@@ -1341,6 +1480,322 @@ visual_apply_shift:
     LD      HL, (visual_op_range_start)
     LD      (cursor_offset), HL
     JP      enter_normal_mode               ; tail-JP — flips mode, parser_clear
+
+
+;; ============================================================
+;; --- Public entry: visual_apply_case_toggle (Story 3.8 — `~`) ---
+;; ============================================================
+
+; ----------------------------------------------------------------
+; visual_apply_case_toggle
+; Visual-mode case-toggle. Single submode-aware dispatcher that
+; branches on visual_submode to CHAR / LINE / BLOCK arms (3-arm
+; shape mirrors Story 3.6 visual_apply_operator; distinct from
+; Story 3.7 visual_apply_shift which collapsed all three submodes
+; to a single line-class projection).
+;
+; Per-submode range projection:
+;   VIS_CHAR  — inclusive [min(anchor, cursor), max(anchor, cursor) + 1)
+;               via SBC-and-swap.
+;   VIS_LINE  — line-promote via motion_find_line_start(cursor) +
+;               anchor (already a line-start by Story 3.4 AC2 invariant);
+;               range_end = motion_find_line_end(max_ls) + 1 when an
+;               LF terminates the bottom line, else file_length (no
+;               read past EOF; satisfies Q5 Option A caller-bounds
+;               contract for gapbuf_case_toggle_range). NO at-EOF
+;               carve-out (case-toggle never deletes bytes).
+;   VIS_BLOCK — per-row BH3 clipped column range via _visual_op_block_row_bytes
+;               (reused verbatim from Story 3.6); per-row CALL to
+;               gapbuf_case_toggle_range with bytes_this_row count;
+;               no shift-tracking needed (case-toggle leaves
+;               file_length unchanged so walker advances by
+;               line_end + 1 unconditionally).
+;
+; Undo recording:
+;   VIS_CHAR / VIS_LINE — on dirty walks (Z=0 from gapbuf_case_toggle_range):
+;                         undo_clear + undo_write_header(UNDO_KIND_CASE_TOGGLE,
+;                         range_start, total_bytes).
+;                       On no-op walks (Z=1 — no alpha bytes in
+;                         selection): PRIOR undo register PRESERVED
+;                         (Q3 Option A — divergence from Stories 2.11
+;                         / 3.7 which pre-clear unconditionally; a
+;                         no-op `~` is more like a non-operation
+;                         than an "operation that found nothing to
+;                         do", so preserving the prior undo entry
+;                         is more useful).
+;   VIS_BLOCK         — UNDO_KIND_TOO_LARGE direct record per Q1
+;                         Option A (multi-region undo deferred;
+;                         matches Story 3.6 BLOCK arm precedent).
+;                         Recorded BEFORE the per-row walks; survives
+;                         even fully-no-op BLOCK selections (conservative
+;                         over-record per AC7).
+;
+; Cursor placement:
+;   VIS_CHAR  — range_start = min(anchor, cursor).
+;   VIS_LINE  — range_start = min(anchor_ls, cursor_ls).
+;   VIS_BLOCK — top_ls + col_min with BH3 jagged-top clamp
+;               (inherited verbatim from Story 3.6 _visual_op_block_arm
+;               .b_have_cursor — DEC HL if past EOF or on LF).
+;
+; Mode flips to NORMAL via enter_normal_mode tail-JP across all
+; four exit paths (empty / no-op / dirty-CHAR-LINE / BLOCK). NO
+; status-clobber concern — gapbuf_case_toggle_range never inserts,
+; so msg_file_too_large is structurally unreachable.
+;
+; AR14 status — visual.asm gains its FIRST DIRECT call into
+; src/gapbuf.asm via gapbuf_case_toggle_range (Stories 3.6 / 3.7
+; only had transitive paths via edits.asm). AR14 ownership of
+; gap_start / gap_end REMAINS with gapbuf.asm — visual.asm
+; contains zero direct writes to those cells; the new primitive's
+; internal gapbuf_move_gap call relocates the gap as a side-effect
+; encapsulated within the call.
+;
+; AR23 contract — see module-header Register conventions block.
+; In:      A = '~' (0x7E — MC4 from dispatch_visual; consumed only
+;          for the prologue stash to visual_op_pending per Q6
+;          Option A — value not consumed downstream).
+; Out:     every alphabetic byte in the selection has its case
+;          toggled (XOR 0x20); non-alpha bytes (LF / space / digits
+;          / punctuation) unchanged. cursor_offset placed at
+;          top-of-selection. mode_byte = MODE_NORMAL via
+;          enter_normal_mode tail-JP. undo register recorded
+;          per the per-arm contract above. buffer_dirty = 1 +
+;          render dirty-rows marked on the dirty + BLOCK paths
+;          (BLOCK always; CHAR/LINE only on dirty walks).
+;          visual_anchor and visual_submode left AS-IS (zombie
+;          state per Stories 3.3-3.7 precedent). yank register
+;          UNTOUCHED (distinct from visual_apply_operator).
+; Trashes: A, BC, DE, HL, F + module-local cells (visual_op_pending,
+;          visual_op_range_start, visual_op_range_bytes for CHAR/LINE;
+;          all 9 visual_op_block_* cells for BLOCK).
+; Calls:   motion_find_line_start (CALL × 1 in LINE arm — cursor
+;          projection; anchor projection skipped per Story 3.4
+;          AC2 invariant, matching Story 3.6 _visual_op_line_arm
+;          precedent);
+;          motion_find_line_end (CALL × 1 in LINE arm + per-row
+;          in BLOCK arm);
+;          motion_byte_at_logical (CALL × 1 in BLOCK arm cursor
+;          jagged-top clamp);
+;          visual_count_block_dims (CALL × 1 in BLOCK arm);
+;          _visual_op_block_row_bytes (CALL per-row in BLOCK arm);
+;          gapbuf_case_toggle_range (CALL × 1 in CHAR / LINE
+;          finalise; per-row in BLOCK arm — FIRST direct gapbuf
+;          primitive call from visual.asm);
+;          undo_clear (CALL × 1 in dirty-CHAR-LINE path + 1 in
+;          BLOCK pre-record);
+;          undo_write_header (CALL × 1 in dirty-CHAR-LINE path +
+;          1 in BLOCK pre-record);
+;          edits_dirty_and_redraw (CALL × 1 in dirty-CHAR-LINE
+;          path + 1 in BLOCK tail);
+;          enter_normal_mode (JP tail × 4 paths — empty / no-op /
+;          dirty-CHAR-LINE / BLOCK).
+; ----------------------------------------------------------------
+visual_apply_case_toggle:
+    LD      (visual_op_pending), A          ; stash operator byte (Q6 Option A — callsite symmetry)
+    LD      A, (visual_submode)
+    CP      VIS_BLOCK
+    JP      Z, _visual_op_case_block_arm
+    CP      VIS_LINE
+    JR      Z, _visual_op_case_line_arm
+    ;; Fall through to _visual_op_case_char_arm (VIS_CHAR == 0).
+
+; ----------------------------------------------------------------
+; _visual_op_case_char_arm
+; VIS_CHAR range compute. SBC-and-swap min/max with inclusive +1
+; bump on total_bytes. Mirrors Story 3.6 _visual_op_char_arm
+; structurally; differs in tail-JP target (the case-toggle finalise
+; instead of the d/y/c finalise).
+; ----------------------------------------------------------------
+_visual_op_case_char_arm:
+    LD      HL, (cursor_offset)
+    LD      DE, (visual_anchor)
+    OR      A
+    SBC     HL, DE                          ; HL = cursor - anchor (signed)
+    JR      NC, .forward
+    ;; Backward: range_start = cursor; BC = anchor - cursor + 1
+    LD      HL, (visual_anchor)
+    LD      DE, (cursor_offset)
+    OR      A
+    SBC     HL, DE                          ; HL = anchor - cursor (positive)
+    INC     HL                              ; +1 inclusive bump
+    LD      B, H
+    LD      C, L                            ; BC = total_bytes
+    LD      HL, (cursor_offset)             ; HL = range_start = cursor (min)
+    JR      _visual_op_case_toggle_finalise
+.forward:
+    INC     HL                              ; HL = cursor - anchor + 1 = total_bytes
+    LD      B, H
+    LD      C, L                            ; BC = total_bytes
+    LD      HL, (visual_anchor)             ; HL = range_start = anchor (min)
+    JR      _visual_op_case_toggle_finalise
+
+; ----------------------------------------------------------------
+; _visual_op_case_line_arm
+; VIS_LINE range compute. Project cursor to its line-start
+; (anchor is already a line-start per Story 3.4 AC2 invariant —
+; matches Story 3.6 _visual_op_line_arm precedent: skip the
+; no-op projection). SBC-and-swap picks min as range_start,
+; max as walker; motion_find_line_end on walker gives line_end;
+; range_end = HL + 1 when LF terminates (CF=0), else HL when at
+; EOF (CF=1; no read past file_length per Q5 Option A).
+; No at-EOF carve-out (case-toggle never deletes bytes — the
+; Story 3.6 _visual_op_line_arm.at_eof leading-LF consumption
+; is irrelevant here).
+; ----------------------------------------------------------------
+_visual_op_case_line_arm:
+    LD      HL, (cursor_offset)
+    CALL    motion_find_line_start          ; HL = cursor_ls
+    PUSH    HL                              ; [cursor_ls]
+    LD      DE, (visual_anchor)             ; DE = anchor (line-start by AC2)
+    OR      A
+    SBC     HL, DE                          ; HL = cursor_ls - anchor (signed)
+    POP     HL                              ; HL = cursor_ls; flags preserved
+    JR      C, .backward
+    ;; Forward / equal: range_start = anchor; walker = cursor_ls (HL)
+    LD      DE, (visual_anchor)
+    LD      (visual_op_range_start), DE
+    JR      .walk_end
+.backward:
+    ;; Backward: range_start = cursor_ls (HL); walker = anchor
+    LD      (visual_op_range_start), HL
+    LD      HL, (visual_anchor)
+.walk_end:
+    ;; HL = walker (the MAX line-start; walk forward to its line's end)
+    CALL    motion_find_line_end            ; HL = LF pos OR file_length; CF=1 on no-LF
+    JR      C, .at_eof                      ; at EOF: range_end = file_length (no +1)
+    INC     HL                              ; LF found: range_end = HL + 1 (consume LF)
+.at_eof:
+    LD      DE, (visual_op_range_start)
+    OR      A
+    SBC     HL, DE                          ; HL = range_end - range_start = total_bytes
+    LD      B, H
+    LD      C, L                            ; BC = total_bytes
+    LD      HL, (visual_op_range_start)
+    ;; Fall through to _visual_op_case_toggle_finalise.
+
+; ----------------------------------------------------------------
+; _visual_op_case_toggle_finalise  (AC2 — CHAR / LINE shared tail)
+; 0-byte defensive guard → CALL gapbuf_case_toggle_range → Z-flag
+; branch:
+;   Z=0 (dirty walk — at least one alpha byte toggled): undo_clear +
+;       undo_write_header(UNDO_KIND_CASE_TOGGLE) + cursor at range_start +
+;       edits_dirty_and_redraw + JP enter_normal_mode.
+;   Z=1 (no-op walk — no alpha bytes): cursor at range_start +
+;       JP enter_normal_mode WITHOUT pre-clear (Q3 Option A —
+;       preserve prior undo register; deliberate divergence from
+;       Stories 2.11 / 3.7 which pre-clear unconditionally).
+;
+; In:      HL = range_start; BC = total_bytes.
+; Out:     per the AC2 contract above.
+; ----------------------------------------------------------------
+_visual_op_case_toggle_finalise:
+    LD      (visual_op_range_start), HL
+    LD      (visual_op_range_bytes), BC
+
+    ;; 0-byte defensive guard (empty selection — bail before touching
+    ;; buffer or undo register).
+    LD      A, B
+    OR      C
+    JP      Z, enter_normal_mode
+
+    ;; HL still holds range_start; BC still holds total_bytes (the
+    ;; LD (mem),HL/BC writes above do not trash the registers).
+    CALL    gapbuf_case_toggle_range        ; Z=1 no-op; Z=0 dirty
+    JR      Z, .restore_cursor              ; no-op (Q3 Option A — preserve prior undo)
+
+    ;; Dirty path: record undo entry + dirty + redraw, then fall
+    ;; through to the shared cursor-restore tail.
+    CALL    undo_clear
+    LD      HL, (visual_op_range_start)
+    LD      BC, (visual_op_range_bytes)
+    LD      A, UNDO_KIND_CASE_TOGGLE
+    CALL    undo_write_header
+    CALL    edits_dirty_and_redraw
+
+.restore_cursor:
+    ;; Shared tail for dirty + no-op paths. cursor_offset := range_start.
+    LD      HL, (visual_op_range_start)
+    LD      (cursor_offset), HL
+    JP      enter_normal_mode
+
+; ----------------------------------------------------------------
+; _visual_op_case_block_arm
+; VIS_BLOCK case-toggle. Per-row BH3 clipped toggle. UNDO_KIND_TOO_LARGE
+; direct record per Q1 Option A (multi-region undo deferred;
+; mirrors Story 3.6 BLOCK arm precedent). Cursor at top_ls +
+; col_min with BH3 jagged-top clamp.
+; ----------------------------------------------------------------
+_visual_op_case_block_arm:
+    ;; Project rectangle + compute col_min / col_max / top_ls via
+    ;; shared helper (Story 3.8 — NFR9 shrink-down #3 factor-out).
+    CALL    _visual_op_block_project_rect
+
+    ;; UNDO_KIND_TOO_LARGE direct record (Q1 Option A — mirrors
+    ;; Story 3.6 BLOCK arm precedent; multi-region undo deferred).
+    CALL    undo_clear
+    LD      HL, (visual_op_block_top_ls)
+    LD      BC, 0                           ; length semantically meaningless for TOO_LARGE
+    LD      A, UNDO_KIND_TOO_LARGE
+    CALL    undo_write_header
+
+    ;; Per-row walk init: walker = top_ls; remaining = rows.
+    LD      HL, (visual_op_block_top_ls)
+    LD      (visual_op_block_walker), HL
+    LD      HL, (visual_op_block_rows)
+    LD      (visual_op_block_remaining_rows), HL
+
+.block_loop:
+    LD      HL, (visual_op_block_walker)
+    PUSH    HL                              ; [walker] — recovered as DE after the call
+    CALL    motion_find_line_end            ; HL = LF pos OR file_length
+    POP     DE                              ; DE = walker (saved before the trashing call)
+    PUSH    HL                              ; [line_end] — for .next_row walker advance
+    OR      A
+    SBC     HL, DE                          ; HL = line_length
+    CALL    _visual_op_block_row_bytes      ; HL = bytes_this_row (BH3 clipped)
+    LD      A, H
+    OR      L
+    JR      Z, .next_row                    ; zero-byte row → skip toggle
+
+    ;; Toggle bytes_this_row bytes starting at walker + col_min.
+    LD      B, H
+    LD      C, L                            ; BC = bytes_this_row
+    LD      HL, (visual_op_block_col_min)
+    LD      DE, (visual_op_block_walker)
+    ADD     HL, DE                          ; HL = toggle_start
+    CALL    gapbuf_case_toggle_range        ; Z discarded (BLOCK records TOO_LARGE upfront)
+
+.next_row:
+    POP     HL                              ; HL = line_end (PUSHed at loop top)
+    INC     HL                              ; walker = line_end + 1 (no shift — file_length unchanged)
+    LD      (visual_op_block_walker), HL
+    LD      HL, (visual_op_block_remaining_rows)
+    DEC     HL
+    LD      (visual_op_block_remaining_rows), HL
+    LD      A, H
+    OR      L
+    JR      NZ, .block_loop                 ; back-loop within JR range (~112 B)
+
+    ;; Cursor placement: top_ls + col_min with BH3 jagged-top clamp
+    ;; (inherited verbatim from Story 3.6 _visual_op_block_arm
+    ;; .b_have_cursor — DEC HL if past EOF or on LF).
+    LD      HL, (visual_op_block_top_ls)
+    LD      DE, (visual_op_block_col_min)
+    ADD     HL, DE
+    LD      (cursor_offset), HL
+    LD      A, H
+    OR      L
+    JR      Z, .b_have_cursor               ; cursor == 0 → no clamp possible
+    CALL    motion_byte_at_logical          ; HL preserved
+    JR      C, .b_cursor_clamp              ; past EOF → clamp back
+    CP      0x0A
+    JR      NZ, .b_have_cursor              ; real byte → leave
+.b_cursor_clamp:
+    DEC     HL
+    LD      (cursor_offset), HL
+.b_have_cursor:
+    CALL    edits_dirty_and_redraw
+    JP      enter_normal_mode
 
 
 ;; ============================================================

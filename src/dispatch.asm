@@ -219,7 +219,30 @@
 ;                     between '9' and 'G', and '>' between '<' and
 ;                     'G'. dispatch_normal UNCHANGED — '>' / '<' in
 ;                     NORMAL still route to parser_handle_operator
-;                     (Story 2.11 op+motion compose path).)
+;                     (Story 2.11 op+motion compose path).
+;                     Story 3.8 — visual_apply_case_toggle lands as
+;                     the one new dispatch_visual entry for '~'
+;                     (FR38 — per-byte case toggle via the new
+;                     gapbuf_case_toggle_range primitive in
+;                     src/gapbuf.asm with per-submode range
+;                     projection: CHAR inclusive byte range; LINE
+;                     line-promoted range; BLOCK per-row BH3 clipped
+;                     column range). Sixth forward-ref symbol from
+;                     this module into src/visual.asm after
+;                     visual_enter_char (3.3) / visual_enter_line
+;                     (3.4) / visual_enter_block (3.5) /
+;                     visual_apply_operator (3.6) /
+;                     visual_apply_shift (3.7). dispatch_visual
+;                     count grows 25 → 26; '~' (0x7E) sorts after
+;                     'y' (0x79) at the table tail (no later entries
+;                     to shift). With this entry, all six Epic-3
+;                     visual operators (d / y / c / > / < / ~) land
+;                     — the dispatch_visual operator surface is
+;                     complete. dispatch_normal UNCHANGED — `~` in
+;                     NORMAL falls through to unbound_normal
+;                     (NORMAL-mode `~` is Growth-tier per PRD §14
+;                     Out of Scope; visual-mode-only is intentional
+;                     vi divergence).)
 ; ============================================================
 
 ;; ============================================================
@@ -703,8 +726,13 @@ dispatch_visual:
     ;; (FR37; line-class shift via edits_indent_walk; the single
     ;; shared dispatcher in src/visual.asm that line-promotes the
     ;; selection submode-agnostically and dispatches the mode-byte
-    ;; to the Story-2.11 helper). `~` (Story 3.8) remains deferred —
-    ;; it falls through to unbound_visual until that story lands.
+    ;; to the Story-2.11 helper).
+    ;; Story 3.8 — operator `~` binds to visual_apply_case_toggle
+    ;; (FR38; per-byte case toggle via gapbuf_case_toggle_range with
+    ;; per-submode range projection). With this entry, ALL six Epic-3
+    ;; visual operators (d / y / c / > / < / ~) land — the dispatch_visual
+    ;; operator surface is complete; the unbound_visual fall-through
+    ;; is unreachable for the documented operator set.
     ;; Forward-referenced via sjasmplus two-pass for symbols defined
     ;; later in the AR25 chain (visual.asm) — backward-resolved for
     ;; parser.asm / motions.asm (defined earlier).
@@ -784,4 +812,7 @@ dispatch_visual:
     ASSERT  'y' > 'w'
     DEFB    'y'                         ; 'y'     — yank operator (FR36, Story 3.6)
     DEFW    visual_apply_operator
+    ASSERT  '~' > 'y'
+    DEFB    '~'                         ; '~'     — case-toggle operator (FR38, Story 3.8)
+    DEFW    visual_apply_case_toggle
 DISPATCH_VISUAL_COUNT EQU ($ - .entries) / 3

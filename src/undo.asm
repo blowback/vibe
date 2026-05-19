@@ -35,9 +35,24 @@
 ;          Pure-memory module: AR13 clean (no BIOS_CONOUT — replay
 ;          dirties via edits_dirty_and_redraw → render_mark_all_dirty);
 ;          AR14 clean (replay mutates the gap buffer EXCLUSIVELY
-;          via gapbuf_insert / gapbuf_delete primitives — no raw
-;          gap_start / gap_end writes); AR15 clean (no BDOS).
-;          All five AR sweep grep targets land zero matches.
+;          via gapbuf_insert / gapbuf_delete / gapbuf_case_toggle_range
+;          primitives — no raw gap_start / gap_end writes); AR15 clean
+;          (no BDOS). All five AR sweep grep targets land zero matches.
+;
+;          Story 3.8 — undo_replay_case_toggle lands. Sixth replay
+;          body (after INSERT / DELETE / REPLACE / INDENT_WALK /
+;          DEDENT_WALK); the lightest of the bodies because
+;          case-toggle is self-inverse (XOR 0x20 twice = identity;
+;          no payload bytes saved; no capacity check; replay is
+;          structurally identical to the original `~` op modulo
+;          the entry path). op_undo gains a dispatch entry for
+;          UNDO_KIND_CASE_TOGGLE; visual_apply_case_toggle in
+;          src/visual.asm records the entry via undo_write_header
+;          directly (no new undo_record_case_toggle wrapper — would
+;          be functionally identical to undo_record_indent_walk
+;          modulo the kind byte; the existing shared undo_write_header
+;          factor-out absorbs the call site fine). FR38 — visual
+;          case-toggle's single-level undo coverage.
 ;
 ; Public:
 ;   op_undo                    ; NORMAL-mode `u` handler (FR45 replay; bound in dispatch_normal)
@@ -221,7 +236,7 @@
 ; Trashes: A, BC, DE, HL, F.
 ; Calls:   status_set_message (empty / too-large surfaces);
 ;          undo_replay_insert / _delete / _replace / _indent_walk /
-;          _dedent_walk (JP per kind);
+;          _dedent_walk / _case_toggle (JP per kind);
 ;          parser_clear (tail-JP every path).
 ; ----------------------------------------------------------------
 op_undo:
@@ -236,6 +251,8 @@ op_undo:
     JP      Z, undo_replay_indent_walk
     CP      UNDO_KIND_DEDENT_WALK
     JP      Z, undo_replay_dedent_walk
+    CP      UNDO_KIND_CASE_TOGGLE
+    JP      Z, undo_replay_case_toggle
     CP      UNDO_KIND_TOO_LARGE
     JR      Z, .too_large
     ;; UNDO_KIND_EMPTY (or any defensive other value) — nothing to undo.
@@ -436,6 +453,36 @@ undo_replay_dedent_walk:
     LD      HL, (undo_position)
     XOR     A                           ; flipped: indent mode
     CALL    edits_indent_walk
+    JP      undo_replay_success_tail
+
+
+;; ============================================================
+;; --- Internal: undo_replay_case_toggle (Story 3.8) ---
+;; ============================================================
+; Inverse-op = case-toggle re-walk over [undo_position,
+; undo_position+undo_length). Case-toggle is self-inverse
+; (XOR 0x20 applied twice = identity), so replay is structurally
+; identical to the original `~` op modulo the entry path. No
+; capacity check (no payload bytes saved — UNDO_KIND_CASE_TOGGLE
+; records (kind, position, length) only). The sixth replay
+; body after INSERT / DELETE / REPLACE / INDENT_WALK / DEDENT_WALK;
+; the lightest of the bodies.
+;
+; In:      (state) undo_kind = UNDO_KIND_CASE_TOGGLE; undo_position;
+;          undo_length.
+; Out:     bytes in [undo_position, undo_position + undo_length)
+;          re-toggled (case-toggle is self-inverse, so re-walking
+;          restores the pre-toggle state); cursor := undo_position;
+;          undo_kind := UNDO_KIND_EMPTY; buffer_dirty=1; all rows
+;          dirty; parser cleared (via undo_replay_success_tail tail-JP).
+; Trashes: A, BC, DE, HL, F.
+; Calls:   gapbuf_case_toggle_range (Z-flag return IGNORED — replay
+;          re-applies regardless), undo_replay_success_tail (tail-JP).
+; ----------------------------------------------------------------
+undo_replay_case_toggle:
+    LD      HL, (undo_position)
+    LD      BC, (undo_length)
+    CALL    gapbuf_case_toggle_range
     JP      undo_replay_success_tail
 
 
