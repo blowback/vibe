@@ -31,7 +31,7 @@ jobs:
         if: steps.cache-sjasmplus.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          git clone --depth 1 --branch v1.23.0 https://github.com/z00m128/sjasmplus.git /tmp/sjasmplus
+          git clone --depth 1 --branch v1.23.0 --recurse-submodules --shallow-submodules https://github.com/z00m128/sjasmplus.git /tmp/sjasmplus
           make -C /tmp/sjasmplus -j"$(nproc)"
           mkdir -p ~/.local/sjasmplus/bin
           cp /tmp/sjasmplus/sjasmplus ~/.local/sjasmplus/bin/
