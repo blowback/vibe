@@ -96,9 +96,17 @@ test: $(COMS) $(FIXTURES)
 	@pass=0; fail=0; \
 	for com in $(COMS); do \
 	  case=$$(basename $$com .com); \
-	  out=$$(timeout --kill-after=1 $(TIMEOUT_SECS) $(IZ_CPM) -a $(IZ_CPM_FIXTURES) -b $(IZ_CPM_FIXTURES) $$com 2>&1); \
+	  out=$$(timeout --kill-after=1 $(TIMEOUT_SECS) $(IZ_CPM) -a $(IZ_CPM_FIXTURES) -b $(IZ_CPM_FIXTURES) $$com </dev/null 2>&1); \
 	  rc=$$?; \
-	  if [ $$rc -eq 124 ]; then \
+	  if [ "$$case" = "harness_fail" ]; then \
+	    if echo "$$out" | grep -qE '\bFAIL\b'; then \
+	      echo "  deliberate-fail  $$case  (harness self-test — counts as pass)"; \
+	      pass=$$((pass+1)); \
+	    else \
+	      echo "  fail     $$case  (harness self-test should FAIL but didn't; rc=$$rc, output: $$out)"; \
+	      fail=$$((fail+1)); \
+	    fi; \
+	  elif [ $$rc -eq 124 ]; then \
 	    echo "  timeout  $$case"; \
 	    fail=$$((fail+1)); \
 	  elif echo "$$out" | grep -qE '\bPASS\b'; then \
