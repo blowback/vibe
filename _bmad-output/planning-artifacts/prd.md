@@ -690,6 +690,13 @@ in the MVP.
 - **FR2:** User can launch VIBE with a filename argument and begin
   editing the contents of that file.
 - **FR3:** User can quit VIBE, returning control to the CCP.
+- **FR53:** When VIBE launches with no filename argument (per FR1), it
+  displays a welcome screen on the editing area (the screen rows that
+  normally show buffer content) containing the VIBE banner, tagline,
+  copyright line, and a quit hint. The first keystroke dismisses the
+  welcome screen (the empty buffer view is restored) and is then
+  processed normally by the active mode; the status line (FR49) is
+  unaffected. (Added 2026-05-19 at the Epic-4 entry boundary.)
 
 ### File Operations
 
@@ -845,23 +852,25 @@ others are explicitly listed as not applicable.
 
 ### Resource Consumption
 
-- **NFR9: Code size budget.** Ceiling: 8192 bytes (~8 KB) of Z80 code
-  (amended 2026-05-17 at the Epic-3 entry boundary from the prior 6400 B
-  ceiling — itself amended 2026-05-17 from 5760 B, 2026-05-16 from
-  5120 B, 2026-05-15 from 5120 B-from-3072, and 2026-05 from the original
-  3072 B / ~3 KB target). The Epic-2 retro recommended this amend (action
-  A2) on entering Epic 3 to give the remaining ~8 stories budget without
-  per-story ceiling churn. Story 2.13 closed at 6241 B (97.5% of the
-  prior 6400 ceiling; 159 B headroom). Projected Epic 3 close lands
-  7000-7500 B / 85-91% of the new 8192 ceiling / 600-1200 B residual
-  headroom. The amended ceiling preserves the original spirit (small
-  editor fits MicroBeast's tight TPA pressure — NFR10 holds: static_end +
-  GAP_BUFFER_MAX + YANK_BUFFER_SIZE remain well under 0xD800) while
-  accommodating realistic per-feature footprint. Epic 4 entry resets
-  the budget conversation; further amends require an explicit retro
-  review. Safety paths (NFR5-NFR8, FR51 oversize-refusal, FR52 buffer-
-  dirty preservation, BH2 clamps) are exempt from byte-shaving pressure
-  — accept overruns rather than skip safety.
+- **NFR9: Code size budget.** Ceiling: 10240 bytes (~10 KB) of Z80 code
+  (amended 2026-05-19 at the Epic-4 entry boundary from the prior 8192 B
+  ceiling — itself amended 2026-05-17 from 6400 B, 2026-05-17 from
+  5760 B, 2026-05-16 from 5120 B, 2026-05-15 from 5120 B-from-3072, and
+  2026-05 from the original 3072 B / ~3 KB target). The Epic-3 retro
+  recommended this amend (action A1) on entering Epic 4 to absorb the
+  visual-mode hardening story (caller-bound fixes + DE-trash docstring +
+  carry-forward sweeps) plus a small feature without per-story ceiling
+  churn. Story 3.8 closed at 8179 B (99.84% of the prior 8192 ceiling;
+  13 B headroom — the tightest cliff seen). Projected Epic 4 close
+  lands ~8400-9000 B / 82-88% of the new 10240 ceiling / 1200-1800 B
+  residual headroom. The amended ceiling preserves the original spirit
+  (small editor fits MicroBeast's tight TPA pressure — NFR10 holds:
+  static_end + GAP_BUFFER_MAX + YANK_BUFFER_SIZE remain well under
+  0xD800) while accommodating realistic per-feature footprint. Epic 5
+  entry resets the budget conversation; further amends require an
+  explicit retro review. Safety paths (NFR5-NFR8, FR51 oversize-refusal,
+  FR52 buffer-dirty preservation, BH2 clamps) are exempt from byte-
+  shaving pressure — accept overruns rather than skip safety.
 - **NFR10: TPA fit.** Total static footprint (code + data + screen
   shadow + undo buffer + gap buffer) fits within the TPA
   (`0x0100..0xD7FF`, ~54 KB).

@@ -20,6 +20,7 @@ This document provides the complete epic and story breakdown for vibe, decomposi
 - FR1: User can launch VIBE with no arguments and begin editing an empty buffer.
 - FR2: User can launch VIBE with a filename argument and begin editing the contents of that file.
 - FR3: User can quit VIBE, returning control to the CCP.
+- FR53: When VIBE launches with no filename argument (per FR1), it displays a welcome screen on the editing area containing the VIBE banner, tagline, copyright, and a quit hint; the first keystroke dismisses the welcome (empty buffer view restored) and is processed normally by the active mode; status line (FR49) unaffected. (Added 2026-05-19 at the Epic-4 entry boundary.)
 
 **File Operations**
 
@@ -118,7 +119,7 @@ This document provides the complete epic and story breakdown for vibe, decomposi
 
 **Resource Consumption**
 
-- NFR9: Code size budget. Tentative ceiling ~3 KB of Z80 code; significant overruns trigger redesign rather than budget inflation; safety paths exempt.
+- NFR9: Code size budget. Ceiling 10240 B (~10 KB) of Z80 code as of the Epic-4 entry boundary (2026-05-19); previously 8192, 6400, 5760, 5120, 3072. Safety paths exempt; further amends require explicit retro review. See PRD §NFR9 for full audit history.
 - NFR10: TPA fit. Total static footprint fits within the TPA (`0x0100..0xD7FF`, ~54 KB).
 - NFR11: Single artifact. VIBE ships as exactly one CP/M `.COM` file.
 - NFR12: Static allocation only. No runtime allocator; all buffers sized at assembly time.
@@ -243,6 +244,7 @@ Not applicable — VIBE has no separate UX Design document. UX-equivalent commit
 | FR50 | 1 | No-op on unsupported commands (status feedback) |
 | FR51 | 2 | I/O failure surfaces in status line |
 | FR52 | 2 | No silent data loss; buffer stays dirty on save error |
+| FR53 | 4 | Welcome screen on no-arg launch; dismissed on first keystroke |
 
 ## Epic List
 
@@ -273,6 +275,16 @@ PRD Journey 1b (search-driven debug iteration) and Journey 2 (visual region edit
 **FRs covered:** FR15 (visual-mode behavior), FR33, FR34, FR35, FR36, FR37, FR38, FR41, FR42, FR43, FR44.
 
 **Modules touched:** `search.asm`, `visual.asm`.
+
+### Epic 4: Visual-mode Hardening & Welcome Screen
+
+Closes the Epic-3 retro carry-forwards before any further feature scope: four caller-bound correctness gaps inherited verbatim from Stories 3.6/3.7/3.8, ten unit-test gaps mounted by Story 3.8, the `motion_byte_at_logical` DE-trash docstring (a 4-instance footgun across Epics 2–3), and a small post-MVP polish — the welcome screen on no-argument launch. Mirrors Epic 1's risk-closure-first pattern: harden before extend. Opens against the NFR9 amend to 10240 B (2026-05-19) recommended by Epic-3 retro A1.
+
+**FRs covered:** FR53 (welcome screen).
+
+**Modules touched:** `gapbuf.asm` (case-toggle short-circuit), `visual.asm` (BLOCK arm clamp + shortcut hardening), `motions.asm` (header docstring only), `init.asm` + new banner asset (welcome screen), `render.asm` (welcome paint + dismissal-driven refresh hook), `input.asm` (first-keystroke dismissal hook).
+
+**Primary NFRs addressed:** NFR9 (operates within the amended 10240 B ceiling), NFR5 (no crashes — caller-bound fixes close edge-case crash surfaces), NFR17 (mode/operator decoupling stays clean across the visual-mode hardening sweep), NFR18 (byte-identical rebuild held across every hardening patch).
 
 ## Epic 1: Editor Foundations & On-Hardware Bring-Up
 
@@ -1750,3 +1762,105 @@ So that FR38 is realized — region case-flipping for retypos.
 **Given** headless tests
 **When** `make test` runs
 **Then** the following pass: `visual_tilde-toggles.asm`, `visual_tilde-block.asm`
+
+## Epic 4: Visual-mode Hardening & Welcome Screen
+
+Closes the Epic-3 retro carry-forwards before any further feature scope: four caller-bound correctness gaps inherited verbatim from Stories 3.6/3.7/3.8, ten unit-test gaps mounted by Story 3.8, the `motion_byte_at_logical` DE-trash docstring (a 4-instance footgun across Epics 2–3), and a small post-MVP polish — the welcome screen on no-argument launch. Mirrors Epic 1's risk-closure-first pattern: harden before extend. Operates against the NFR9 amend to 10240 B (2026-05-19) recommended by Epic-3 retro A1.
+
+### Story 4.1: Visual-mode hardening pass (caller-bound fixes + DE-trash docstring + unit-test gaps)
+
+As the VIBE author,
+I want the four caller-bound correctness gaps inherited from Epic 3 closed alongside the unit-test coverage gaps that Story 3.8 surfaced and the long-overdue `motion_byte_at_logical` DE-trash docstring,
+So that Epic 3's "land features fast" pattern doesn't accrue silent edge-case correctness debt and the next walker author doesn't re-hit the same footgun.
+
+**Acceptance Criteria:**
+
+**Given** the `gapbuf_case_toggle_range` primitive
+**When** called with `file_length = 0` (empty buffer)
+**Then** the primitive short-circuits at entry (~5 B `file_length = 0` guard) and returns without walking the gap (closes Story 3.8 caller-bound finding 1; transitively closes finding 2 — past-EOF offsets in the BLOCK walker when `top_ls >= file_length` no longer reach the primitive)
+
+**Given** the VIS_BLOCK arm's jagged-top cursor clamp
+**When** `top_ls + col_min` overshoots the top row's EOL by more than 1 byte
+**Then** the clamp uses a `motion_byte_at_logical`-driven loop (not a single-step `DEC HL`) and lands the cursor on the actual rightmost in-row byte (closes Story 3.8 caller-bound finding 3)
+
+**Given** the VIS_BLOCK arm clamp with `cursor == 0` and a leading LF
+**When** the clamp executes
+**Then** the `OR L ; JR Z` shortcut is removed (or guarded so the clamp is not skipped); the cursor still lands inside the top row's content (closes Story 3.8 caller-bound finding 4)
+
+**Given** a reader opens `src/motions.asm`
+**When** they read the module header `Public:` block and `motion_byte_at_logical`'s AR23 contract docstring
+**Then** the DE-trash invariant is documented verbatim in both locations (closes retro A2; the 4-instance footgun across Stories 2.6 ×2, 3.4, 3.5 stops accruing)
+
+**Given** headless tests under `test/cases/`
+**When** `make test` runs
+**Then** the following ten new cases pass (one per Story 3.8 unit-test gap from retro):
+- `visual_char_toggle-backward-path.asm` (CHAR with `cursor < anchor`)
+- `visual_char_toggle-boundary-at-file-length.asm`
+- `visual_line_toggle-last-line-no-lf.asm` (`.at_eof` CF=1 path)
+- `visual_line_toggle-one-line-selection.asm`
+- `visual_block_toggle-one-by-one.asm` (1×1 rectangle)
+- `visual_block_toggle-top-ls-at-file-length.asm`
+- `gapbuf_case_toggle_range-crosses-gap.asm` (range straddles `gap_start`/`gap_end`)
+- `undo_replay-noop-roundtrip.asm` (no-op undo preserved through `op_undo` round-trip)
+- `visual_block_toggle-all-digits-clobber-preserve.asm` (no-op all-digit case doesn't clobber prior undo with TOO_LARGE)
+- `undo_replay-interleaved-mutations.asm` (replay correctness under interleaved mutations)
+
+**Given** `make sizes` after the hardening pass lands
+**When** the listing is read
+**Then** `vibe.com` sits within the NFR9 10240 B ceiling with at least 1500 B residual headroom (projection: ~8300–8500 B = +100–200 B for the four code fixes, 0 B for the docstring, 0 B for test additions, against 8179 B baseline at Story 3.8 close)
+
+**Given** UAT on hardware
+**When** the dev runs (a) `vibe` on an empty buffer + `V~`, (b) `vibe foo.fs` with a jagged BLOCK selection whose top-row col_min overshoots EOL by >1, and (c) a buffer with a leading blank line + `Ctrl-V` from `cursor == 0` + `~`
+**Then** all three scenarios behave per the AC above without hangs, crashes, or status-line silence; the status line carries `msg_mode_normal` (or `msg_yank_too_large` / `msg_undo_too_large` where applicable per the surviving Story 3.6 contract)
+
+**Given** NFR18 byte-identical rebuild
+**When** the tree is built clean twice after the hardening pass
+**Then** both `vibe.com` SHA-256 digests match (no host-path or timestamp leakage introduced)
+
+### Story 4.2: Welcome screen on no-argument launch
+
+As a MicroBeast resident developer,
+I want a welcome screen to appear when I launch `vibe` with no filename argument, dismissed by the first keystroke (which is then processed normally),
+So that FR53 is realized — VIBE has a friendly entry point that announces itself and reminds me how to quit, mirroring vim's `:intro` polish.
+
+**Acceptance Criteria:**
+
+**Given** I launch `vibe` with no filename argument (per FR1)
+**When** the editor finishes initial draw
+**Then** the editing area (rows 1–23) shows the VIBE welcome screen: ASCII banner of the word "VIBE", the tagline "Vi-like Beast Editor", a copyright line "(c) 2026 ant.org", and a quit hint "Type :q to quit!" (banner content matches `banner.txt` in the repo, or a derived asset compiled into `vibe.com`)
+**And** the status line on row 24 (FR49) shows the normal-mode state — filename `[No Name]` (or equivalent), mode NORMAL, no error
+**And** the underlying gap buffer is empty (cursor at offset 0)
+
+**Given** I launch `vibe filename.fs` with a filename argument (per FR2)
+**When** the editor finishes initial draw
+**Then** the welcome screen is NOT shown; the editing area shows the loaded file contents per FR2 (current behaviour is preserved)
+
+**Given** the welcome screen is shown
+**When** I press any key (e.g., `i`, `:`, `h`, `Esc`, `Ctrl-L`, a printable character)
+**Then** the welcome screen is dismissed (full redraw of the empty editing area; equivalent to FR47/FR48 full-screen refresh path)
+**And** the keystroke is then processed normally by the active mode (e.g., `i` enters MODE_INSERT and the next character typed lands at offset 0 in the empty buffer; `:` enters MODE_COMMAND and shows the ex-line prompt; `Esc` is consumed by NORMAL-mode no-op semantics)
+**And** the welcome screen is not redrawn on any subsequent input — even if the buffer returns to empty (e.g., after `dd` on a 1-line buffer)
+
+**Given** the welcome screen has been dismissed
+**When** subsequent edits proceed
+**Then** behaviour is indistinguishable from launching with no welcome (FR1 baseline) — render is incremental (NFR1), no welcome-screen state survives in any visible form
+
+**Given** the welcome screen interacts with FR47 (incremental render)
+**When** the welcome is painted on init and cleared on first keystroke
+**Then** both events count as full-screen redraws (the same exemption FR47 grants to initial draw and `Ctrl-L`); no FR47 incremental-render contract is violated for sustained editing
+
+**Given** `make sizes` after Story 4.2 lands
+**When** the listing is read
+**Then** `vibe.com` sits within the NFR9 10240 B ceiling with at least 1000 B residual headroom (projection: ~8600–8900 B = +300–400 B for the welcome banner asset + render + dismissal logic, against the Story 4.1 close baseline)
+
+**Given** UAT on hardware
+**When** the dev runs (a) `vibe` (no args) → observes the welcome screen, (b) presses `:` → welcome clears, ex-prompt appears, types `q`+Enter, returns to CCP, (c) `vibe banner.txt` → observes no welcome, file contents loaded, (d) `vibe` again, presses `i`+`hello`+Esc → welcome clears on first `i`, `hello` lands in the buffer
+**Then** all four scenarios behave per the AC above with no flicker, drift, or status-line corruption
+
+**Given** headless tests under `test/cases/`
+**When** `make test` runs
+**Then** the following new cases pass: `init_welcome-shown-no-arg.asm` (asserts shadow-buffer rows 1–23 contain banner content after init when argv is empty), `init_welcome-hidden-with-arg.asm` (asserts shadow-buffer rows 1–23 contain file content, not banner, when argv has a filename), `welcome_dismissed-on-first-key.asm` (drives a single keystroke through `dispatch_key`, asserts shadow-buffer rows 1–23 are restored to empty-buffer state and the keystroke reached the mode handler), `welcome_does-not-redraw-after-dismiss.asm` (asserts the welcome state flag is one-shot — does not re-arm if buffer returns to empty)
+
+**Given** NFR18 byte-identical rebuild
+**When** the tree is built clean twice after Story 4.2 lands
+**Then** both `vibe.com` SHA-256 digests match

@@ -44,7 +44,7 @@ The NFRs are dominated by three load-bearing contracts:
   Esc-disambiguation budget. Each requires specific architectural
   mechanism (shadow buffer, input-loop discipline, tick-driven
   timeout).
-- **Resource Consumption (NFR9–NFR12):** 8192 B code budget (amended 2026-05-17 at the Epic-3 entry boundary from 6400 B; itself amended 2026-05-17 from 5760 B; itself amended 2026-05-16 from 5 KB; itself amended 2026-05-15 from 3 KB tentative),
+- **Resource Consumption (NFR9–NFR12):** 10240 B code budget (amended 2026-05-19 at the Epic-4 entry boundary from 8192 B; itself amended 2026-05-17 from 6400 B; itself amended 2026-05-17 from 5760 B; itself amended 2026-05-16 from 5 KB; itself amended 2026-05-15 from 3 KB tentative),
   TPA fit, single .COM artifact, static allocation only. The budget is
   intuition-not-cap; safety overrides it.
 
@@ -197,7 +197,7 @@ A from-scratch skeleton is the right answer because:
 2. **NFR18 demands reproducible builds.** Adopting an unaudited
    skeleton risks importing timestamp / host-path leakage that would
    then need to be rooted out.
-3. **The 8192 B code budget (NFR9, amended 2026-05-17 at the Epic-3 entry boundary from 6400 B; itself amended 2026-05-17 from 5760 B; itself amended 2026-05-16 from 5 KB; itself amended 2026-05-15 from 3 KB) and crash-free contract (NFR5)
+3. **The 10240 B code budget (NFR9, amended 2026-05-19 at the Epic-4 entry boundary from 8192 B; itself amended 2026-05-17 from 6400 B; itself amended 2026-05-17 from 5760 B; itself amended 2026-05-16 from 5 KB; itself amended 2026-05-15 from 3 KB) and crash-free contract (NFR5)
    make the project-shape itself architectural.** Where files split,
    how includes are organized, and how the Makefile drives sjasmplus
    are not generic concerns — they flow from the pre-pinned module
@@ -302,7 +302,7 @@ files is intentional: each module owns one cross-cutting concern, and
   embedding). Per NFR18 the build is byte-identical from a clean
   tree.
 - Listing and symbol files emitted into a non-tracked location for
-  size auditing against the 8192 B budget (NFR9, amended 2026-05-17 at the Epic-3 entry boundary from 6400 B; itself amended 2026-05-17 from 5760 B; itself amended 2026-05-16 from 5 KB; itself amended 2026-05-15 from 3 KB).
+  size auditing against the 10240 B budget (NFR9, amended 2026-05-19 at the Epic-4 entry boundary from 8192 B; itself amended 2026-05-17 from 6400 B; itself amended 2026-05-17 from 5760 B; itself amended 2026-05-16 from 5 KB; itself amended 2026-05-15 from 3 KB).
 
 **Testing Framework:**
 
@@ -732,7 +732,7 @@ iz-cpm's drive-mount mechanism is used to expose the directory.
 **Code-budget reclamation from MC3.** The binary-search dispatch
 choice drops total dispatch-table footprint from ~2 KB (flat
 256-entry × 4 modes) to ~180 B (sparse sorted × 4 modes), reclaiming
-~1.8 KB into the 8192 B code envelope (NFR9). The shared `dispatch_key`
+~1.8 KB into the 10240 B code envelope (NFR9). The shared `dispatch_key`
 routine adds ~30 B. Net reclamation ≈ 1.77 KB — meaningful headroom
 for safety paths NFR9 already exempts, plus per-handler defensive
 checks.
@@ -1331,7 +1331,7 @@ vibe/
 │                            # write-protected files, etc.)
 │
 ├── build/                   # Generated, gitignored
-│   ├── vibe.lst             # Listing — per-section size audit (NFR9; 8192 B ceiling, amended 2026-05-17 at Epic-3 entry)
+│   ├── vibe.lst             # Listing — per-section size audit (NFR9; 10240 B ceiling, amended 2026-05-19 at Epic-4 entry)
 │   └── vibe.sld             # Symbol/listing data for debugger
 │
 └── vibe.com                 # Final artifact (NFR11). Gitignored.

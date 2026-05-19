@@ -9,3 +9,5 @@
 
           Vi-like Beast Editor
             (c) 2026 ant.org
+
+            Type :q to quit!
